@@ -1,10 +1,3 @@
-' SPI mode
-' INIT OK
-' READ CODE INOP w/4W SPI ENGINE (doesn't tristate MOSI?)
-' READ CODE WORKS w/TINY SPI ENGINE
-' READ CODE WORKS w/MODIFIED 20MHz/10MHz SPI engine (no CS builtin)
-'   CMD 18 (52 00 00 00 01 ff), r, r, r: 0x00, r: ff, r: ff, r:fe, r: 00, r: 00 ...
-'#define DEBUG
 CON
 
     _clkmode        = xtal1+pll16x
@@ -70,15 +63,16 @@ CON
 
 OBJ
 
-    spi : "com.spi.fast-nocs"
-    slowspi: "tiny.com.spi"
-    time: "time"
-    crc : "math.crc"
+    spi     : "com.spi.fast-nocs"
+    slowspi : "tiny.com.spi"
+    time    : "time"
+    crc     : "math.crc"
 
 CON
 
     ENORESPOND          = $E000_0000
     EVOLTRANGE          = $E000_0001
+    ENOHIGHCAP          = $E000_0002
 
 VAR
 
@@ -86,31 +80,37 @@ VAR
     long _is_hc
     byte _blkbuff[512]
 
-PUB Init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status | r
+PUB Startx(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
 ' Initialize SD card
-    outa[CS_PIN] := 1
+    outa[CS_PIN] := 1                           ' deselect SD card
     dira[CS_PIN] := 1
     _CS := CS_PIN
 
     ' perform initialization at slow bus speed (mandatory)
     slowspi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
     time.msleep(1)
-
     dummyclocks{}
-    if setidle{} <> 1
-        return ENORESPOND
 
-    ifnot sendintcondcmd(1, $AA)
-        return EVOLTRANGE
+    if setidle{} <> 1
+        return ENORESPOND                       ' card didn't respond
+
+    ifnot sendintcondcmd(1, $AA)                ' voltage range rejected
+        return EVOLTRANGE                       '   by card
 
     initialize{}
-    _is_hc := ishighcapacity
 
-    crccheckenabled(false)
+    ifnot ishighcapacity{}                      ' card isn't SDHC or SDXC
+        return ENOHIGHCAP
+
+    crccheckenabled(false)                      ' disable CRC checks from here
 
     ' shut down slow SPI engine and initialize fast SPI engine
     slowspi.deinit{}
     if (status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0))
+
+PUB Stop{}
+
+    spi.deinit{}
 
 PUB CRCCheckEnabled(state): status | cmd_pkt
 ' Enable CRC checking in SPI commands
@@ -121,7 +121,7 @@ PUB CRCCheckEnabled(state): status | cmd_pkt
 
 PUB DummyClocks
 ' Cycle clock to prepare SD card to receive commands
-    outa[_CS] := 1                                     ' make sure card isn't selected
+    outa[_CS] := 1                              ' make sure card isn't selected
     repeat 10
         slowspi.wr_byte($FF)                    ' init: send 80 clocks
 
@@ -164,7 +164,7 @@ PUB RdBlock(ptr_buff, block_nr) | cmd_pkt, bsy
         bsy := spi.rd_byte & 1
     while bsy
 
-    spi.rdblock_lsbf(ptr_buff, 512)            ' read block_nr - 512 bytes
+    spi.rdblock_lsbf(ptr_buff, 512)             ' read block_nr - 512 bytes
     outa[_CS] := 1
 
     cmd_pkt := 0
