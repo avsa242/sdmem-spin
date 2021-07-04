@@ -1,8 +1,8 @@
 CON
 
-    _clkmode        = xtal1+pll16x
-    _xinfreq        = 5_000_000
+    SECTORSIZE      = 512                       ' bytes per sector
 
+' SD card commands
     CMD_BASE        = $40
     CMD0            = CMD_BASE+0                ' GO_IDLE_STATE
     CMD1            = CMD_BASE+1                ' SEND_OP_COND (MMC)
@@ -52,14 +52,6 @@ CON
     ACMD13          = CMD13                     ' SD_STATUS (SDC)
     ACMD23          = CMD23                     ' SET_WR_BLK_ERASE_COUNT (SDC)
     ACMD41          = CMD41                     ' SEND_OP_COND (SDC)
-
-
-' --
-    CS              = 3
-    SCK             = 1
-    MOSI            = 2
-    MISO            = 0
-' --
 
 OBJ
 
