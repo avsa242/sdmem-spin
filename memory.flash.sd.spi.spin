@@ -70,9 +70,9 @@ VAR
 
     long _CS
     long _is_hc
-    byte _blkbuff[512]
+    byte _blkbuff[SECTORSIZE]
 
-PUB Startx(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
+PUB Init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
 ' Initialize SD card
     outa[CS_PIN] := 1                           ' deselect SD card
     dira[CS_PIN] := 1
@@ -100,8 +100,10 @@ PUB Startx(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
     slowspi.deinit{}
     if (status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0))
 
-PUB Stop{}
+PUB DeInit{}
 
+    _CS := _is_hc := 0
+    bytefill(@_blkbuff, 0, SECTORSIZE)
     spi.deinit{}
 
 PUB CRCCheckEnabled(state): status | cmd_pkt
@@ -153,10 +155,10 @@ PUB RdBlock(ptr_buff, block_nr) | cmd_pkt, bsy
 
     outa[_CS] := 0
     repeat                                      ' wait for card to be ready
-        bsy := spi.rd_byte & 1
+        bsy := spi.rd_byte{} & 1
     while bsy
 
-    spi.rdblock_lsbf(ptr_buff, 512)             ' read block_nr - 512 bytes
+    spi.rdblock_lsbf(ptr_buff, SECTORSIZE)      ' read block_nr - 512 bytes
     outa[_CS] := 1
 
     cmd_pkt := 0
@@ -230,6 +232,6 @@ PUB SlowCMD(cmd, ptr_buff): resp | cmd_pkt[2], i, tries
     repeat              
         resp := slowspi.rd_byte                 ' read response from card
     while (resp & $80) and (tries--)            ' retry until ready,
-    outa[_CS] := 1                                     '   up to 'tries' times
+    outa[_CS] := 1                              '   up to 'tries' times
 
 
