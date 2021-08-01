@@ -70,10 +70,16 @@ VAR
 
     long _CS
     long _is_hc
-    byte _blkbuff[SECTORSIZE]
+
+PUB Null{}
+' This is not a top-level object
 
 PUB Init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
 ' Initialize SD card
+'   Returns:
+'       1..8: (cog number + 1) of SPI engine
+'       0: no free cogs available
+'       negative numbers: error
     outa[CS_PIN] := 1                           ' deselect SD card
     dira[CS_PIN] := 1
     _CS := CS_PIN
@@ -103,7 +109,6 @@ PUB Init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
 PUB DeInit{}
 
     _CS := _is_hc := 0
-    bytefill(@_blkbuff, 0, SECTORSIZE)
     spi.deinit{}
 
 PUB CRCCheckEnabled(state): status | cmd_pkt
@@ -159,6 +164,49 @@ PUB RdBlock(ptr_buff, block_nr) | cmd_pkt, bsy
     while bsy
 
     spi.rdblock_lsbf(ptr_buff, SECTORSIZE)      ' read block_nr - 512 bytes
+    outa[_CS] := 1
+
+    cmd_pkt := 0
+    fastcmd(CMD12, @cmd_pkt)                    ' turn off block read
+
+PUB RdBlock_LSBF(ptr_buff, nr_bytes, sect_nr) | cmd_pkt, bsy
+' Read nr_bytes of data from SD card into ptr_buff, starting at sector sect_nr
+    cmd_pkt.byte[0] := sect_nr.byte[3]
+    cmd_pkt.byte[1] := sect_nr.byte[2]
+    cmd_pkt.byte[2] := sect_nr.byte[1]
+    cmd_pkt.byte[3] := sect_nr.byte[0]
+
+    fastcmd(CMD18, @cmd_pkt)                    ' set to block read mode
+
+    outa[_CS] := 0
+    repeat                                      ' wait for card to be ready
+        bsy := spi.rd_byte{} & 1
+    while bsy
+
+    spi.rdblock_lsbf(ptr_buff, nr_bytes <# SECTORSIZE)
+    outa[_CS] := 1
+
+    cmd_pkt := 0
+    fastcmd(CMD12, @cmd_pkt)                    ' turn off block read
+
+PUB RdBlock_LSBF_Part(ptr_buff, nr_bytes, offs, sect_nr) | cmd_pkt, bsy
+
+    cmd_pkt.byte[0] := sect_nr.byte[3]
+    cmd_pkt.byte[1] := sect_nr.byte[2]
+    cmd_pkt.byte[2] := sect_nr.byte[1]
+    cmd_pkt.byte[3] := sect_nr.byte[0]
+
+    fastcmd(CMD18, @cmd_pkt)                    ' set to block read mode
+
+    outa[_CS] := 0
+    repeat                                      ' wait for card to be ready
+        bsy := spi.rd_byte{} & 1
+    while bsy
+
+    repeat offs                                 ' throw away the first 'offs'
+        spi.rd_byte                             ' bytes to 'seek' to that pos
+
+    spi.rdblock_lsbf(ptr_buff, nr_bytes-offs <# SECTORSIZE)
     outa[_CS] := 1
 
     cmd_pkt := 0
