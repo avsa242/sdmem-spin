@@ -120,7 +120,7 @@ PUB FRead(ptr_dest, nr_bytes): nr_read | nr_left, movbytes
         '   sector size, file size, and proximity to end of file
         nr_bytes := nr_bytes <# fat#BYTESPERSECT
         nr_bytes := nr_bytes <# fat.filesize{}
-        nr_bytes := nr_bytes <# (fat.fileend{}-_fseek_pos)
+        nr_bytes := nr_bytes <# (fat.filesize{}-_fseek_pos) ' XXX seems like this should be -1
 
         ' read a block from the SD card into the internal sector buffer,
         '   and copy as many bytes as possible from it into the user's buffer
@@ -130,20 +130,19 @@ PUB FRead(ptr_dest, nr_bytes): nr_read | nr_left, movbytes
         nr_read := (nr_read + movbytes) <# nr_bytes
         nr_left := (nr_bytes - nr_read)
 
+        _fseek_sect++                           ' advance to next sector
+        if _fseek_sect > fat.clustlastsect{}    ' if last sector of this
+            followchain{}                       '   cluster is reached,
+            if nextcluster{} <> -1              '   advance to next cluster
+                _fseek_sect := fat.clust2sect(fat.filenextclust{})
+            else
+                return EEOF                     ' no more clusters; end of file
         ' if there's still more data to be read after the first read
         '   (in the case of a seek position that started after the start
         '   of the first sector read, with a total length of more than a
         '   sector), move on to the next sector, be it the next sequentially
         '   or the start of the next cluster
         if nr_left > 0
-            _fseek_sect++                       ' advance to next sector
-            if _fseek_sect > fat.clustlastsect{}' if last sector of this
-                followchain{}                   '   cluster is reached,
-                if nextcluster{} <> -1          '   advance to next cluster
-                    _fseek_sect := fat.clust2sect(fat.filenextclust{})
-                else
-                    return EEOF                 ' no more clusters; end of file
-
             ' read the next block from the SD card, and copy the remainder
             '   of the requested length into the user's buffer
             sd.rdblock_lsbf(@_sect_buff, fat#BYTESPERSECT, _fseek_sect)
