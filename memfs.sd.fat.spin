@@ -137,11 +137,7 @@ PUB FRead(ptr_dest, nr_bytes): nr_read | nr_left, movbytes
                 _fseek_sect := fat.clust2sect(fat.filenextclust{})
             else
                 return EEOF                     ' no more clusters; end of file
-        ' if there's still more data to be read after the first read
-        '   (in the case of a seek position that started after the start
-        '   of the first sector read, with a total length of more than a
-        '   sector), move on to the next sector, be it the next sequentially
-        '   or the start of the next cluster
+
         if nr_left > 0
             ' read the next block from the SD card, and copy the remainder
             '   of the requested length into the user's buffer
