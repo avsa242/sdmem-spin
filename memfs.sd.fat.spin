@@ -5,7 +5,7 @@
     Description: FAT32-formatted SDHC/XC driver
     Copyright (c) 2021
     Started Aug 1, 2021
-    Updated Aug 1, 2021
+    Updated Sep 14, 2021
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -24,7 +24,8 @@ CON
 
 VAR
 
-    long _fseek_pos, _fread_sect
+    long _fseek_pos, _fseek_sect
+    word _sect_offs
     byte _sect_buff[sd#SECTORSIZE]
 
 OBJ
@@ -59,7 +60,7 @@ PUB Mount{}: status
     fat.syncbpb{}                               ' update all of the FAT fs data from it
 
 PUB FileSize
-
+' Get size of opened file
     return fat.filesize{}
 
 PUB Find(ptr_str): dirent | rds, endofdir, name_tmp[3], ext_tmp[2], name_uc[3], ext_uc[2]
@@ -98,41 +99,67 @@ PUB FOpen(fn_str, mode): status
     status := find(fn_str)                      ' look for file by name
     if status == ENOTFOUND                      ' not found; what is mode?
         if mode == WRITE                        ' WRITE? Create the file
-            return ENOTIMPLM                    'xxx not implemented yet
+            return ENOTIMPLM                    '   XXX not implemented yet
         elseif mode == READ                     ' READ? It really doesn't exist
             return ENOTFOUND
     fat.fopen(status & $0F)                     ' mask is to keep within # root dir entries per rds
     _fseek_pos := 0
-    _fread_sect := fat.filefirstsect{}          ' initialize current sector with file's first
+    _fseek_sect := fat.filefirstsect{}          ' initialize current sector with file's first
     return 0
     ' xxx set r/w flag?
 
-PUB FRead(ptr_dest, nr_bytes) | nr_read
-' Read next block of data from file, up to 512 bytes per call
-'   Returns: number of bytes read, or EEOF (-3)
-    if _fseek_pos < fat.filesize{}            ' before reading, make sure we aren't already at EOF
-        nr_read := nr_bytes <# 512 <# fat.filesize{}-_fseek_pos
-        sd.rdblock_lsbf(ptr_dest, nr_read, _fread_sect)'XXX partial read here?
-        _fseek_pos += nr_read                 ' keep track of how much we've read
-        _fread_sect++
-        if _fread_sect > fat.clustlastsect{}    ' if last sector of this cluster is reached,
-            followchain{}
-            if nextcluster{} <> -1              ' advance to next cluster
-                _fread_sect := fat.clust2sect(fat.filenextclust{})
-            else
-                return EEOF
+PUB FRead(ptr_dest, nr_bytes): nr_read | nr_left, movbytes
+' Read a block of data from current seek position of opened file into ptr_dest
+'   Valid values:
+'       nr_bytes: 1..512, or the size of the file, whichever is smaller
+    nr_read := nr_left := 0
+
+    ' make sure current seek isn't already at the EOF
+    if _fseek_pos < fat.filesize{}
+        ' clamp nr_bytes to physical limits:
+        '   sector size, file size, and proximity to end of file
+        nr_bytes := nr_bytes <# fat#BYTESPERSECT
+        nr_bytes := nr_bytes <# fat.filesize{}
+        nr_bytes := nr_bytes <# (fat.fileend{}-_fseek_pos)
+
+        ' read a block from the SD card into the internal sector buffer,
+        '   and copy as many bytes as possible from it into the user's buffer
+        sd.rdblock_lsbf(@_sect_buff, fat#BYTESPERSECT, _fseek_sect)
+        movbytes := fat#BYTESPERSECT-_sect_offs
+        bytemove(ptr_dest, @_sect_buff+_sect_offs, movbytes <# nr_bytes)
+        nr_read := (nr_read + movbytes) <# nr_bytes
+        nr_left := (nr_bytes - nr_read)
+
+        ' if there's still more data to be read after the first read
+        '   (in the case of a seek position that started after the start
+        '   of the first sector read, with a total length of more than a
+        '   sector), move on to the next sector, be it the next sequentially
+        '   or the start of the next cluster
+        if nr_left > 0
+            _fseek_sect++                       ' advance to next sector
+            if _fseek_sect > fat.clustlastsect{}' if last sector of this
+                followchain{}                   '   cluster is reached,
+                if nextcluster{} <> -1          '   advance to next cluster
+                    _fseek_sect := fat.clust2sect(fat.filenextclust{})
+                else
+                    return EEOF                 ' no more clusters; end of file
+
+            ' read the next block from the SD card, and copy the remainder
+            '   of the requested length into the user's buffer
+            sd.rdblock_lsbf(@_sect_buff, fat#BYTESPERSECT, _fseek_sect)
+            bytemove(ptr_dest+nr_read, @_sect_buff, nr_left)
+            nr_read += nr_left
+        _fseek_pos += nr_read                   ' update seek pointer
         return nr_read
     else
-        return EEOF
-'   XXX read file at _fseek_pos into the beginning of the sector buffer
-'   XXX then for the remainder of the 512 bytes, read, but starting after the end
-'   XXX of the data in there already.
+        return EEOF                             ' reached end of file
+
 
 pub getpos
 
     return _fseek_pos
 
-PUB FSeek(pos) | seek_clust, clust_offs, rel_sect_nr, clust_nr, sect_offs
+PUB FSeek(pos) | seek_clust, clust_offs, rel_sect_nr, clust_nr
 ' Seek to position in currently open file
     if (pos < 0) or (pos => fat.filesize{})     ' catch bad seek positions;
         return EBADSEEK                         '   return error
@@ -147,9 +174,12 @@ PUB FSeek(pos) | seek_clust, clust_offs, rel_sect_nr, clust_nr, sect_offs
     ' use remainder to get offset within cluster
     clust_offs := pos//fat.bytesperclust{}
 
-    ' use high bits of offset within cluster to ge
+    ' use high bits of offset within cluster to get sector offset
     '   within the cluster
     rel_sect_nr := clust_offs >> 9
+
+    ' set offset within sector to find the start of the data
+    _sect_offs := pos // fat#BYTESPERSECT
 
     ' follow the cluster chain to determine which actual cluster it is
     repeat seek_clust
@@ -157,9 +187,8 @@ PUB FSeek(pos) | seek_clust, clust_offs, rel_sect_nr, clust_nr, sect_offs
         clust_nr := nextcluster{}
 
     ' set the absolute sector number and the seek position for subsequent R/W
-    _fread_sect := fat.clust2sect(clust_nr)+rel_sect_nr
+    _fseek_sect := fat.clust2sect(clust_nr)+rel_sect_nr
     _fseek_pos := pos
-
     return pos
 
 PUB FollowChain{} | fat_sect

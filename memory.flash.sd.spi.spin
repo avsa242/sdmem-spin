@@ -203,7 +203,7 @@ PUB RdBlock_LSBF(ptr_buff, nr_bytes, sect_nr) | cmd_pkt, bsy
     fastcmd(CMD12, @cmd_pkt)                    ' turn off block read
 
 PUB RdBlock_LSBF_Part(ptr_buff, nr_bytes, offs, sect_nr) | cmd_pkt, bsy
-
+' Partial read of sector, by throwing away the first 'offs' bytes
     cmd_pkt.byte[0] := sect_nr.byte[3]
     cmd_pkt.byte[1] := sect_nr.byte[2]
     cmd_pkt.byte[2] := sect_nr.byte[1]
