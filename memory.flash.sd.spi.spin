@@ -6,7 +6,7 @@
         20MHz write, 10MHz read
     Copyright (c) 2021
     Started Aug 1, 2021
-    Updated Aug 1, 2021
+    Updated Sep 15, 2021
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -257,6 +257,26 @@ PUB SetIdle{}: status | cmd_pkt
     ' send CMD0 - no params, only dummy/"stuff" bits
     cmd_pkt := 0
     status := slowcmd(CMD0, @cmd_pkt)
+
+PUB WrBlock(ptr_buff, sect_nr) | cmd_pkt, bsy
+' Write 512 bytes of data from ptr_buff to SD card, starting at sector sect_nr
+    cmd_pkt.byte[0] := sect_nr.byte[3]
+    cmd_pkt.byte[1] := sect_nr.byte[2]
+    cmd_pkt.byte[2] := sect_nr.byte[1]
+    cmd_pkt.byte[3] := sect_nr.byte[0]
+
+    fastcmd(CMD25, @cmd_pkt)                    ' set to block write mode
+
+    outa[_CS] := 0
+    repeat                                      ' wait for card to be ready
+        bsy := spi.rd_byte{} & 1
+    while bsy
+
+    spi.wrblock_lsbf(ptr_buff, SECTORSIZE)
+    outa[_CS] := 1
+
+    cmd_pkt := 0
+    fastcmd(CMD12, @cmd_pkt)                    ' turn off block write
 
 PRI AppSpecCMD(cmd, ptr_buff): resp | cmd_pkt
 ' Application-specific command
