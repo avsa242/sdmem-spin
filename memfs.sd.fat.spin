@@ -80,7 +80,7 @@ PUB Find(ptr_str): dirent | rds, endofdir, name_tmp[3], ext_tmp[2], name_uc[3], 
             if fat.fileisdeleted{}              ' ignore deleted files
                 next
             str.left(@name_tmp, ptr_str, 8)     ' filename is leftmost 8 chars
-            str.right(@ext_tmp, ptr_str, 3)     ' ext. is rightmost 3 charrs
+            str.right(@ext_tmp, ptr_str, 3)     ' ext. is rightmost 3 chars
             name_uc := str.upper(@name_tmp)     ' convert to uppercase
             ext_uc := str.upper(@ext_tmp)
             if strcomp(fat.filename{}, name_uc) and {
@@ -118,13 +118,12 @@ PUB FRead(ptr_dest, nr_bytes): nr_read | nr_left, movbytes
     if _fseek_pos < fat.filesize{}
         ' clamp nr_bytes to physical limits:
         '   sector size, file size, and proximity to end of file
-        nr_bytes := nr_bytes <# fat#BYTESPERSECT
-        nr_bytes := nr_bytes <# fat.filesize{}
-        nr_bytes := nr_bytes <# (fat.filesize{}-_fseek_pos) ' XXX seems like this should be -1
+        nr_bytes := nr_bytes <# fat#BYTESPERSECT <# fat.filesize{} {
+}       <# (fat.filesize{}-_fseek_pos) ' XXX seems like this should be -1
 
         ' read a block from the SD card into the internal sector buffer,
         '   and copy as many bytes as possible from it into the user's buffer
-        sd.rdblock_lsbf(@_sect_buff, fat#BYTESPERSECT, _fseek_sect)
+        sd.rdblock(@_sect_buff, _fseek_sect)
         movbytes := fat#BYTESPERSECT-_sect_offs
         bytemove(ptr_dest, @_sect_buff+_sect_offs, movbytes <# nr_bytes)
         nr_read := (nr_read + movbytes) <# nr_bytes
@@ -141,7 +140,7 @@ PUB FRead(ptr_dest, nr_bytes): nr_read | nr_left, movbytes
         if nr_left > 0
             ' read the next block from the SD card, and copy the remainder
             '   of the requested length into the user's buffer
-            sd.rdblock_lsbf(@_sect_buff, fat#BYTESPERSECT, _fseek_sect)
+            sd.rdblock(@_sect_buff, _fseek_sect)
             bytemove(ptr_dest+nr_read, @_sect_buff, nr_left)
             nr_read += nr_left
         _fseek_pos += nr_read                   ' update seek pointer
