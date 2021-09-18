@@ -5,7 +5,7 @@
     Description: FAT32-formatted SDHC/XC driver
     Copyright (c) 2021
     Started Aug 1, 2021
-    Updated Sep 14, 2021
+    Updated Sep 18, 2021
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -43,7 +43,7 @@ PUB Startx(SD_CS, SD_SCK, SD_MOSI, SD_MISO): status
     if lookdown(status: 1..8)
         mount{}
         return
-    return FALSE
+    return status
 
 pub getsbp
 
@@ -189,6 +189,24 @@ PUB FollowChain{} | fat_sect
 ' Read FAT to get next cluster number in chain
     fat_sect := fat.fileprevclust{} >> 7
     sd.rdblock(@_sect_buff, fat.fat1start{} + fat_sect)
+
+PUB FWrite(ptr_buff, nr_bytes) | nr_write, nr_left
+' Write a block of data from current seek position of opened file into ptr_dest
+'   Valid values:
+'       nr_bytes: 1..512, or the size of the file, whichever is smaller
+    nr_write := nr_left := 0
+
+    ' make sure current seek isn't already at the EOF
+    if _fseek_pos < fat.filesize{}
+        ' clamp nr_bytes to physical limits:
+        '   sector size, file size, and proximity to end of file
+        nr_bytes := nr_bytes <# fat#BYTESPERSECT <# fat.filesize{} {
+}       <# (fat.filesize{}-_fseek_pos) ' XXX seems like this should be -1
+
+        ' copy as many bytes as possible from the user's buffer into the
+        '   internal sector buffer, and write a block from it to the SD card
+        bytemove(@_sect_buff+_sect_offs, ptr_buff, nr_bytes)
+        sd.wrblock(@_sect_buff, _fseek_sect)
 
 PUB NextCluster{}: c
     c := 0
