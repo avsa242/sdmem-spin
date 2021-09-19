@@ -5,7 +5,7 @@
     Description: FAT32-formatted SDHC/XC driver
     Copyright (c) 2021
     Started Aug 1, 2021
-    Updated Sep 18, 2021
+    Updated Sep 19, 2021
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -205,6 +205,7 @@ PUB FWrite(ptr_buff, nr_bytes) | nr_write, nr_left
 
         ' copy as many bytes as possible from the user's buffer into the
         '   internal sector buffer, and write a block from it to the SD card
+        bytefill(@_sect_buff, 0, fat#BYTESPERSECT)
         bytemove(@_sect_buff+_sect_offs, ptr_buff, nr_bytes)
         sd.wrblock(@_sect_buff, _fseek_sect)
 
