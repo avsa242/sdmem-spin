@@ -61,13 +61,17 @@ PUB Mount{}: status
     sd.rdblock(@_sect_buff, fat.partstart{})    ' now read that sector into sector buffer
     fat.syncbpb{}                               ' update all of the FAT fs data from it
 
-PUB FileSize
+PUB FileSize: sz
 ' Get size of opened file
     return fat.filesize{}
 
 PUB Find(ptr_str): dirent | rds, endofdir, name_tmp[3], ext_tmp[2], name_uc[3], ext_uc[2]
 ' Find file, by name
-'   Returns: directory entry of file (0..n), or ENOUTFOUND (-2) if not found
+'   Valid values:
+'       ptr_str: pointer to space-padded string containing filename (8.3)
+'   Returns:
+'       directory entry of file (0..n)
+'       or ENOUTFOUND (-2) if not found
     dirent := 0
     rds := 0
     endofdir := false
@@ -95,9 +99,12 @@ PUB Find(ptr_str): dirent | rds, endofdir, name_tmp[3], ext_tmp[2], name_uc[3], 
 
 PUB FOpen(fn_str, mode): status
 ' Open file for subsequent operations
-'   fn_str: pointer to string containing filename (must be space padded)
-'   mode: READ (0), or WRITE (1)
-'   Returns: 0 if successful, error code otherwise
+'   Valid values:
+'       fn_str: pointer to string containing filename (must be space padded)
+'       mode: READ (0), or WRITE (1)
+'   Returns:
+'       0 if successful,
+'       or error
     status := find(fn_str)                      ' look for file by name
     if status == ENOTFOUND                      ' not found; what is mode?
         if mode == WRITE                        ' WRITE? Create the file
@@ -114,7 +121,11 @@ PUB FOpen(fn_str, mode): status
 PUB FRead(ptr_dest, nr_bytes): nr_read | nr_left, movbytes
 ' Read a block of data from current seek position of opened file into ptr_dest
 '   Valid values:
+'       ptr_dest: pointer to buffer to copy data read
 '       nr_bytes: 1..512, or the size of the file, whichever is smaller
+'   Returns:
+'       number of bytes actually read,
+'       or error
     nr_read := nr_left := 0
 
     ' make sure current seek isn't already at the EOF
@@ -156,8 +167,13 @@ pub getpos
 
     return _fseek_pos
 
-PUB FSeek(pos) | seek_clust, clust_offs, rel_sect_nr, clust_nr
+PUB FSeek(pos): status | seek_clust, clust_offs, rel_sect_nr, clust_nr
 ' Seek to position in currently open file
+'   Valid values:
+'       pos: 0 to file size-1
+'   Returns:
+'       position seeked to,
+'       or error
     if (pos < 0) or (pos => fat.filesize{})     ' catch bad seek positions;
         return EBADSEEK                         '   return error
     longfill(@seek_clust, 0, 5)                 ' clear local vars
@@ -190,15 +206,20 @@ PUB FSeek(pos) | seek_clust, clust_offs, rel_sect_nr, clust_nr
 
 PUB FollowChain{} | fat_sect
 ' Read FAT to get next cluster number in chain
-    fat_sect := fat.fileprevclust{} >> 7
+    fat_sect := fat.fileprevclust{} >> 7        ' use high bits of cluster # to
+                                                ' get which sector of the FAT
+                                                ' the cluster # is in
     sd.rdblock(@_sect_buff, fat.fat1start{} + fat_sect)
 
-PUB FWrite(ptr_buff, nr_bytes) | nr_write, nr_left
+PUB FWrite(ptr_buff, nr_bytes): status | nr_write, nr_left
 ' Write a block of data from current seek position of opened file into ptr_dest
 '   Valid values:
 '       nr_bytes: 1..512, or the size of the file, whichever is smaller
-    if _fmode <> WRITE
-        return EWRONGMODE
+'   Returns:
+'       number of bytes actually written,
+'       or error
+    if _fmode <> WRITE                          ' ensure the file is opened
+        return EWRONGMODE                       ' in write mode, else fail
     nr_write := nr_left := 0
 
     ' make sure current seek isn't already at the EOF
@@ -213,6 +234,8 @@ PUB FWrite(ptr_buff, nr_bytes) | nr_write, nr_left
         bytefill(@_sect_buff, 0, fat#BYTESPERSECT)
         bytemove(@_sect_buff+_sect_offs, ptr_buff, nr_bytes)
         sd.wrblock(@_sect_buff, _fseek_sect)
+
+' below: temporary, for devel purposes
 
 PUB NextCluster{}: c
     c := 0
