@@ -16,6 +16,7 @@ CON
     ENOTFOUND   = -2                            ' no such file or directory
     EEOF        = -3                            ' end of file
     EBADSEEK    = -4                            ' bad seek value
+    EWRONGMODE  = -5                            ' illegal operation for file mode
     ENOTIMPLM   = $E000_0000                    ' not implemented
 
 ' File open modes
@@ -196,6 +197,8 @@ PUB FWrite(ptr_buff, nr_bytes) | nr_write, nr_left
 ' Write a block of data from current seek position of opened file into ptr_dest
 '   Valid values:
 '       nr_bytes: 1..512, or the size of the file, whichever is smaller
+    if _fmode <> WRITE
+        return EWRONGMODE
     nr_write := nr_left := 0
 
     ' make sure current seek isn't already at the EOF
