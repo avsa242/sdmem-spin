@@ -27,6 +27,7 @@ VAR
     long _fseek_pos, _fseek_sect
     word _sect_offs
     byte _sect_buff[sd#SECTORSIZE]
+    byte _fmode
 
 OBJ
 
@@ -105,6 +106,7 @@ PUB FOpen(fn_str, mode): status
     fat.fopen(status & $0F)                     ' mask is to keep within # root dir entries per rds
     _fseek_pos := 0
     _fseek_sect := fat.filefirstsect{}          ' initialize current sector with file's first
+    _fmode := mode
     return 0
     ' xxx set r/w flag?
 
