@@ -13,7 +13,7 @@
 
 CON
 
-    SECTORSIZE      = 512                       ' bytes per sector
+    SECT_SZ      = 512                       ' bytes per sector
 
 ' SD card commands
     CMD_BASE        = $40
@@ -66,18 +66,34 @@ CON
     ACMD23          = CMD23                     ' SET_WR_BLK_ERASE_COUNT (SDC)
     ACMD41          = CMD41                     ' SEND_OP_COND (SDC)
 
-    START_BLK       = $FE
+    START_BLK       = $FE                       ' Start token
+
+' R1 bits
+    PARAM_ERR       = (1 << 6)                  ' parameter error
+    ADDR_ERR        = (1 << 5)                  ' address error
+    ERASEQ_ERR      = (1 << 4)                  ' erase sequence error
+    CRC_ERR         = (1 << 3)                  ' com CRC error
+    ILL_CMD         = (1 << 2)                  ' illegal command
+    ERARST          = (1 << 1)                  ' erase reset
+    IDLING          = 1                         ' in idle state
+
+    { token values }
+    SD_TOKEN_OOR    = %0000_1000                ' out of range
+    SD_TOKEN_CECC   = %0000_0100                ' ECC failed
+    SD_TOKEN_CC     = %0000_0010                ' CC error
+    SD_TOKEN_ERROR  = %0000_0001                ' Error
+
+    WRBUSY          = $00                       ' SD is busy writing block
 
 OBJ
 
-    spi     : "com.spi.fast-nocs"
-    slowspi : "tiny.com.spi"
+    spi     : "com.spi.nocog"
     time    : "time"
     crc     : "math.crc"
 
 CON
 
-    ENORESPOND          = $E000_0000
+    ENORESP             = $E000_0000
     EVOLTRANGE          = $E000_0001
     ENOHIGHCAP          = $E000_0002
 
@@ -100,226 +116,397 @@ PUB Init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
     _CS := CS_PIN
 
     ' perform initialization at slow bus speed (mandatory)
-    slowspi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
+    spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
+    if (sd_init() =< 0)
+        return ENORESP
+    status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
+
+PUB SD_Init() | resp[2], cmdAttempts
+
+    longfill(@resp, 0, 2)
+    cmdAttempts := 0
+
+    SD_powerUpSeq()
+
+    repeat while (resp.byte[0] := SD_goIdleState() <> $01)
+        cmdAttempts++
+        if (cmdAttempts > 10)
+            return ENORESP
+    longfill(@resp, 0, 2)
+
+    SD_sendIfCond(@resp)
+    if (resp.byte[0] <> $01)
+        return ENORESP
+    if (resp.byte[4] <> $AA)
+        return ENORESP
+    longfill(@resp, 0, 2)
+
+    cmdAttempts := 0
+    repeat
+        if (cmdAttempts > 100)
+            return ENORESP
+        resp.byte[0] := SD_sendApp()
+
+        if (resp.byte[0] < 2)
+            resp.byte[0] := SD_sendOpCond()
+
+        time.msleep(10)
+
+        cmdAttempts++
+    while (resp.byte[0] <> $00) 'SD_READY?
+
+    SD_readOCR(@resp)
+    ifnot (resp.byte[1] & $80)
+        return ENORESP
+
+    return 1
+
+PUB SD_command(cmd, arg, crc)
+
+    spi.wr_byte(cmd)    '$40 already OR'd in with CMD constants
+    spi.wr_byte(arg.byte[3])
+    spi.wr_byte(arg.byte[2])
+    spi.wr_byte(arg.byte[1])
+    spi.wr_byte(arg.byte[0])
+
+    spi.wr_byte(crc|$01)
+
+PUB SD_goIdleState: res1
+
+    spi.wr_byte($ff)
+    outa[_CS] := 0
+    spi.wr_byte($ff)
+
+    SD_command(CMD0, 0, $94)
+
+    res1 := SD_readRes1()
+
+    spi.wr_byte($ff)
+    outa[_CS] := 1
+    spi.wr_byte($ff)
+
+    return res1
+
+PUB SD_powerUpSeq | i
+
+    outa[_CS] := 1
+
     time.msleep(1)
-    dummyclocks{}
 
-    if setidle{} <> 1
-        return ENORESPOND                       ' card didn't respond
+    repeat i from 0 to 9
+        spi.wr_byte($ff)
 
-    ifnot sendintcondcmd(1, $AA)                ' voltage range rejected
-        return EVOLTRANGE                       '   by card
+    outa[_CS] := 1
+    spi.wr_byte($ff)
 
-    initialize{}
+con
 
-    ifnot ishighcapacity{}                      ' card isn't SDHC or SDXC
-        return ENOHIGHCAP
+    PARAM_ERROR     = %0100_0000
+    ADDR_ERROR      = %0010_0000
+    ERASE_SEQ_ERROR = %0001_0000
+    CRC_ERROR       = %0000_1000
+    ILLEGAL_CMD     = %0000_0100
+    ERASE_RESET     = %0000_0010
+    IN_IDLE         = %0000_0001
 
-    crccheckenabled(false)                      ' disable CRC checks from here
+PUB SD_printR1(resp)
 
-    ' shut down slow SPI engine and initialize fast SPI engine
-    slowspi.deinit{}
-    if (status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0))
+    if (resp & %1000_0000)
+        'ser.strln(@"Error")
+    if (resp == 0)
+        'ser.strln(@"Card ready")
+    if (resp & PARAM_ERROR)
+        'ser.strln(@"Parameter Error")
+    if (resp & ADDR_ERROR)
+        'ser.strln(@"Address Error")
+    if (resp & ERASE_SEQ_ERROR)
+        'ser.strln(@"Erase Sequence Error")
+    if (resp & CRC_ERROR)
+        'ser.strln(@"CRC Error")
+    if (resp & ILLEGAL_CMD)
+        'ser.strln(@"Illegal Command")
+    if (resp & ERASE_RESET)
+        'ser.strln(@"Erase Reset Error")
+    if (resp & IN_IDLE)
+        'ser.strln(@"In Idle State")
 
-PUB DeInit{}
+CON
 
-    _CS := _is_hc := 0
-    spi.deinit{}
+    VDD_2728 = %10000000
+    VDD_2829 = %00000001
+    VDD_2930 = %00000010
+    VDD_3031 = %00000100
+    VDD_3132 = %00001000
+    VDD_3233 = %00010000
+    VDD_3334 = %00100000
+    VDD_3435 = %01000000
+    VDD_3536 = %10000000
 
-PUB CRCCheckEnabled(state): status | cmd_pkt
-' Enable CRC checking in SPI commands
-    cmd_pkt := ||(state <> 0)
+PUB SD_printR3(resp) | POWER_UP_STATUS, CCS_VAL
+
+    SD_printR1(byte[resp][0])
+
+    if (byte[resp][0] > 1)
+        return
+
+    'ser.str(@"Card Power Up Status: ")
+    POWER_UP_STATUS := byte[resp][1] & $40
+    if (POWER_UP_STATUS)
+        'ser.strln(@"READY")
+        'ser.str(@"CCS Status: ")
+        CCS_VAL := byte[resp][1] & $40
+        if (CCS_VAL)
+            'ser.strln(@"1\n\r")
+        else
+            'ser.strln(@"0\n\r")
+    else
+        'ser.strln(@"BUSY")
+
+    'ser.str(@"VDD Window: ")
+    if (byte[resp][3] & VDD_2728)
+        'ser.str(@"2.7-2.8, ")
+    if (byte[resp][2] & VDD_2829)
+        'ser.str(@"2.8-2.9, ")
+    if (byte[resp][2] & VDD_2930)
+        'ser.str(@"2.9-3.0, ")
+    if (byte[resp][2] & VDD_3031)
+        'ser.str(@"3.0-3.1, ")
+    if (byte[resp][2] & VDD_3132)
+        'ser.str(@"3.1-3.2, ")
+    if (byte[resp][2] & VDD_3233)
+        'ser.str(@"3.2-3.3, ")
+    if (byte[resp][2] & VDD_3334)
+        'ser.str(@"3.3-3.4, ")
+    if (byte[resp][2] & VDD_3435)
+        'ser.str(@"3.4-3.5, ")
+    if (byte[resp][2] & VDD_3536)
+        'ser.str(@"3.5-3.6")
+    'ser.newline
+
+CON
+
+    VOLTAGE_ACC_27_33   = %0000_0001
+    VOLTAGE_ACC_LOW     = %0000_0010
+    VOLTAGE_ACC_RES1    = %0000_0100
+    VOLTAGE_ACC_RES2    = %0000_1000
+
+PUB SD_printR7(resp) | CMD_VER, VOL_ACC, i
+
+    SD_printR1(byte[resp][0])
+
+    if (byte[resp][0] > 1)  'error
+        return
+
+    CMD_VER := byte[resp][1]
+    'ser.printf1(@"Command version: %x\n\r", (CMD_VER >> 4) & $f0)
+
+    VOL_ACC := byte[resp][3]
+    'ser.str(@"Voltage accepted: ")
+    if (VOL_ACC == VOLTAGE_ACC_27_33)
+        'ser.strln(@"2.7-3.6V")
+    elseif (VOL_ACC == VOLTAGE_ACC_LOW)
+        'ser.strln(@"LOW VOLTAGE")
+    elseif (VOL_ACC == VOLTAGE_ACC_RES1)
+        'ser.strln(@"RESERVED")
+    elseif (VOL_ACC == VOLTAGE_ACC_RES2)
+        'ser.strln(@"RESERVED")
+    else
+        'ser.strln(@"NOT DEFINED")
+
+    'ser.printf1(@"Echo: %x\n\r", byte[resp][4])
+
+PUB SD_readOCR(resp)
+
+    spi.wr_byte($ff)
+    outa[_CS] := 0
+    spi.wr_byte($ff)
+
+    SD_command(CMD58, 0, 0)
+
+    SD_readRes3(resp)
+
+    spi.wr_byte($ff)
+    outa[_CS] := 1
+    spi.wr_byte($ff)
+
+PUB SD_readRes1: res1 | i
+
+    i := res1 := 0
     repeat
-        status := slowcmd(CMD59, @cmd_pkt)
-    until status <> $FF                         ' wait for resp. from card
+        res1 := spi.rd_byte
+        i++
+        if (i > 8)
+            quit
+'        'ser.printf1(@"SD_readRes1(): res1 == %x\n\r", res1)
+    while (res1 => $0f)
 
-PUB DummyClocks
-' Cycle clock to prepare SD card to receive commands
-    outa[_CS] := 1                              ' make sure card isn't selected
-    repeat 10
-        slowspi.wr_byte($FF)                    ' init: send 80 clocks
+PUB SD_readRes3(res3)
 
-PUB Initialize{}: status | cmd_pkt, tries
-' Initialize SD card
-    cmd_pkt.byte[0] := 1 << 6                   ' HCS bit: req SDHC/XC support
-    cmd_pkt.byte[1] := 0
-    cmd_pkt.byte[2] := 0
-    cmd_pkt.byte[3] := 0
+    byte[res3][0] := SD_readRes1()
 
-    tries := 0
-    repeat
-        tries++
-        status := appspeccmd(ACMD41, @cmd_pkt)
-    until status == 0
+    if (byte[res3][0] > 1)   ' error
+        return
 
-PUB IsHighCapacity{}: flag | cmd_pkt
-' Flag indicating card is a high-capacity type (i.e., SDHC or SDXC)
-    cmd_pkt := 0
+    byte[res3][1] := spi.rd_byte()
+    byte[res3][2] := spi.rd_byte()
+    byte[res3][3] := spi.rd_byte()
+    byte[res3][4] := spi.rd_byte()
 
-    if slowcmd(CMD58, @cmd_pkt) <> 0            ' query card's OCR register
-        repeat
+PUB SD_readRes7(res7)
 
+    byte[res7][0] := SD_readRes1()
+
+    if (byte[res7][0] > 1)   ' error
+        return
+
+    byte[res7][1] := spi.rd_byte()
+    byte[res7][2] := spi.rd_byte()
+    byte[res7][3] := spi.rd_byte()
+    byte[res7][4] := spi.rd_byte()
+
+PUB SD_readSingleBlock(addr, buf, token): res1 | read, readAttempts, i
+
+    'ser.strln(@"SD_readSingleBlock()")
+    res1 := read := readAttempts := 0
+    byte[token] := $ff
+
+    spi.wr_byte($ff)
     outa[_CS] := 0
-    flag := slowspi.rdlong_msbf{}               ' read the response
+    spi.wr_byte($ff)
+
+    'ser.strln(@"sending CMD17")
+    SD_command(CMD17, addr, $00)
+
+    res1 := SD_readRes1()
+    'ser.printf1(@"res1 is %x\n\r", res1)
+    if (res1 <> $ff)
+        readAttempts := 0
+        repeat while (++readAttempts <> 20)
+'            'ser.printf1(@"readattempts = %d\n\r", readAttempts)
+            if ((read := spi.rd_byte) <> $ff)
+                quit
+            time.msleep(10)
+        if (read == $fe)    ' start token
+            'ser.strln(@"got start token")
+            repeat i from 0 to 511
+                byte[buf][i] := spi.rd_byte
+            spi.rd_byte
+            spi.rd_byte ' throw away CRC
+        byte[token] := read
+
+    spi.wr_byte($ff)
     outa[_CS] := 1
-    return (flag & CCS) <> 0                    ' CCS bit (30)
+    spi.wr_byte($ff)
 
-PUB RdBlock(ptr_buff, block_nr) | cmd_pkt, bsy
-' Read block of data from SD card
-    cmd_pkt.byte[0] := block_nr.byte[3]
-    cmd_pkt.byte[1] := block_nr.byte[2]
-    cmd_pkt.byte[2] := block_nr.byte[1]
-    cmd_pkt.byte[3] := block_nr.byte[0]
+    return res1
 
-    fastcmd(CMD18, @cmd_pkt)                    ' set to block read mode
 
+PUB SD_sendApp(): res1
+
+    spi.wr_byte($ff)
     outa[_CS] := 0
-    repeat                                      ' wait for card to be ready
-        bsy := spi.rd_byte{} & 1
-    while bsy
+    spi.wr_byte($ff)
 
-    spi.rdblock_lsbf(ptr_buff, SECTORSIZE)      ' read block_nr - 512 bytes
+    SD_command(CMD55, 0, 0)
+
+    res1 := SD_readRes1()
+
+    spi.wr_byte($ff)
     outa[_CS] := 1
+    spi.wr_byte($ff)
 
-    cmd_pkt := 0
-    fastcmd(CMD12, @cmd_pkt)                    ' turn off block read
+    return res1
 
-PUB RdBlock_LSBF(ptr_buff, nr_bytes, sect_nr) | cmd_pkt, bsy
-' Read nr_bytes of data from SD card into ptr_buff, starting at sector sect_nr
-    cmd_pkt.byte[0] := sect_nr.byte[3]
-    cmd_pkt.byte[1] := sect_nr.byte[2]
-    cmd_pkt.byte[2] := sect_nr.byte[1]
-    cmd_pkt.byte[3] := sect_nr.byte[0]
+PUB SD_sendIfCond(resp)
 
-    fastcmd(CMD18, @cmd_pkt)                    ' set to block read mode
-
+    spi.wr_byte($ff)
     outa[_CS] := 0
-    repeat                                      ' wait for card to be ready
-        bsy := spi.rd_byte{} & 1
-    while bsy
+    spi.wr_byte($ff)
 
-    spi.rdblock_lsbf(ptr_buff, nr_bytes <# SECTORSIZE)
+    SD_command(CMD8, $00_00_01_aa, $86)
+
+    SD_readRes7(resp)
+
+    spi.wr_byte($ff)
     outa[_CS] := 1
+    spi.wr_byte($ff)
 
-    cmd_pkt := 0
-    fastcmd(CMD12, @cmd_pkt)                    ' turn off block read
+PUB SD_sendOpCond(): res1
 
-PUB RdBlock_LSBF_Part(ptr_buff, nr_bytes, offs, sect_nr) | cmd_pkt, bsy
-' Partial read of sector, by throwing away the first 'offs' bytes
-    cmd_pkt.byte[0] := sect_nr.byte[3]
-    cmd_pkt.byte[1] := sect_nr.byte[2]
-    cmd_pkt.byte[2] := sect_nr.byte[1]
-    cmd_pkt.byte[3] := sect_nr.byte[0]
-
-    fastcmd(CMD18, @cmd_pkt)                    ' set to block read mode
-
+    spi.wr_byte($ff)
     outa[_CS] := 0
-    repeat                                      ' wait for card to be ready
-        bsy := spi.rd_byte{} & 1
-    while bsy
+    spi.wr_byte($ff)
 
-    repeat offs                                 ' throw away the first 'offs'
-        spi.rd_byte                             ' bytes to 'seek' to that pos
+    SD_command(ACMD41, $40_00_00_00, 0)
 
-    spi.rdblock_lsbf(ptr_buff, nr_bytes-offs <# SECTORSIZE)
+    res1 := SD_readRes1()
+
+    spi.wr_byte($ff)
     outa[_CS] := 1
+    spi.wr_byte($ff)
 
-    cmd_pkt := 0
-    fastcmd(CMD12, @cmd_pkt)                    ' turn off block read
+    return res1
 
-PUB SendIntCondCmd(vrange, chk_patt): resp | cmd_pkt
-' Send interface condition command
-'   vrange: requested voltage range (_3V3 or _LV)
-'   chk_patt: check pattern to write - is echoed by card in response when
-'       requested voltage range is accepted
-    case vrange
-        _3V3:
-        _LV:
-        other:
-            return
-    cmd_pkt.byte[0] := 0
-    cmd_pkt.byte[1] := 0
-    cmd_pkt.byte[2] := vrange & VHS_BITS        ' voltage range of card
-    cmd_pkt.byte[3] := chk_patt & $FF           ' check pattern
+PUB SD_writeSingleBlock(addr, buf, token): resp | readAttempts, read, i
 
-    slowcmd(CMD8, @cmd_pkt)
+'    'ser.printf3(@"SD_writeSingleBlock(): addr = %x, buf = %x, token = %x", addr, buf, token)
+    readAttempts := read := i := 0
+    byte[token] := $ff
 
+    spi.wr_byte($ff)
     outa[_CS] := 0
-    resp := slowspi.rdlong_msbf{}               ' read response
+    spi.wr_byte($ff)
+
+    SD_command(CMD24, addr, 0)
+
+    resp.byte[0] := SD_readRes1()
+
+    if (resp.byte[0] == 0)  'READY?
+        spi.wr_byte(START_BLK)
+
+        repeat i from 0 to 511
+            spi.wr_byte(byte[buf][i])
+
+        readAttempts := 0
+        repeat while (++readAttempts <> 25)
+            read := spi.rd_byte
+            if (read <> $ff)
+                byte[token] := $ff
+                quit
+            time.msleep(10)
+
+        if (read & $1f) == $05  ' block was accepted by the card
+            byte[token] := $05
+
+            readAttempts := 0
+            repeat
+                read := spi.rd_byte
+                if (++readAttempts == 25)
+                    byte[token] := $00
+                    quit
+                time.msleep(10)
+            while (read == WRBUSY)
+
+    spi.wr_byte($ff)
     outa[_CS] := 1
+    spi.wr_byte($ff)
 
-    ' check to see that the card responded with the same voltage range and
-    '   bit pattern as requested. If it does, the requested voltage range
-    '   is supported. Otherwise, it isn't.
-    resp := (resp == (cmd_pkt.byte[2] << 8 | cmd_pkt.byte[3]))
+    return resp.byte[0]
 
-PUB SetIdle{}: status | cmd_pkt
-' Set card to idle state
+PUB RdBlock(ptr_buff, block_nr): resp | token
 
-    ' send CMD0 - no params, only dummy/"stuff" bits
-    cmd_pkt := 0
-    status := slowcmd(CMD0, @cmd_pkt)
+    token := 0
+    resp := SD_readSingleBlock(block_nr, ptr_buff, @token)
+    if (token == $fe)
+        return 512
 
+PUB WrBlock(ptr_buff, block_nr): resp | token
 
-PUB WrBlock(ptr_buff, sect_nr) | cmd_pkt, ra, ready
-' Write 512 bytes of data from ptr_buff to SD card, starting at sector sect_nr
-    cmd_pkt.byte[0] := sect_nr.byte[3]
-    cmd_pkt.byte[1] := sect_nr.byte[2]
-    cmd_pkt.byte[2] := sect_nr.byte[1]
-    cmd_pkt.byte[3] := sect_nr.byte[0]
-
-    ready := fastcmd(CMD24, @cmd_pkt)           ' set to block write mode
-
-    if ready <> $ff
-        outa[_CS] := 0
-        spi.wr_byte(START_BLK)                  ' start block
-        spi.wrblock_lsbf(ptr_buff, SECTORSIZE)
-
-        ra := spi.rd_byte
-        if (ra & $1f) == $05
-            repeat while spi.rd_byte == $00
-        spi.rd_byte
-        outa[_CS] := 1
-
-        cmd_pkt := 0
-        fastcmd(CMD12, @cmd_pkt)                ' turn off block write
-
-PRI AppSpecCMD(cmd, ptr_buff): resp | cmd_pkt
-' Application-specific command
-    cmd_pkt := 0
-    slowcmd(CMD55, @cmd_pkt)
-    resp := slowcmd(cmd, ptr_buff)
-
-PRI FastCMD(cmd, ptr_buff): resp | cmd_pkt[2], i, tries
-' Send SD card command using fast SPI engine
-    tries := 9
-    outa[_CS] := 0
-    spi.wrlong_msbf($FF_FF_FF_FF)               ' send idle clocks to card
-    cmd_pkt.byte[0] := cmd                      ' build packet
-    bytemove(@cmd_pkt.byte[1], ptr_buff, 4)
-    cmd_pkt.byte[5] := $FF                      ' dummy CRC byte
-    spi.wrblock_lsbf(@cmd_pkt, 6)               ' send CMD, params, CRC
-
-    repeat
-        resp := spi.rd_byte                     ' read response from card
-    while (resp & $80) and (tries--)            ' retry until ready,
-    outa[_CS] := 1                                     '   up to 'tries' times
-
-PUB SlowCMD(cmd, ptr_buff): resp | cmd_pkt[2], i, tries
-' Send SD card command using slow SPI engine
-'   (used only during initialization)
-    tries := 9
-    outa[_CS] := 0
-    slowspi.rdlong_msbf{}                       ' send idle clocks to card
-    cmd_pkt.byte[0] := cmd                      ' build packet
-    bytemove(@cmd_pkt.byte[1], ptr_buff, 4)
-    cmd_pkt.byte[5] := crc.sdcrc7(@cmd_pkt, 5)
-    slowspi.wrblock_lsbf(@cmd_pkt, 6)           ' send CMD, params, CRC
-
-    repeat              
-        resp := slowspi.rd_byte                 ' read response from card
-    while (resp & $80) and (tries--)            ' retry until ready,
-    outa[_CS] := 1                              '   up to 'tries' times
+    token := 0
+    resp := SD_writeSingleBlock(block_nr, ptr_buff, @token)
+    'ser.printf1(@"WrBlock(): token = %x\n\r", token)
+    if (token == $05)
+        return 512
 
 DAT
 {
