@@ -4,9 +4,9 @@
     Author: Jesse Burt
     Description: Driver for SPI-connected SDHC/SDXC cards
         20MHz write, 10MHz read
-    Copyright (c) 2021
+    Copyright (c) 2022
     Started Aug 1, 2021
-    Updated Sep 18, 2021
+    Updated Jun 12, 2022
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -61,8 +61,8 @@ CON
 
 ' Application-specific commands
 '   (defined as equivalent to general commands - handled differently
-'   in AppSpecCMD() )
-    ACMD13          = CMD13                     ' SD_STATUS (SDC)
+'   in AppSpecCMD{} )
+    ACMD13          = CMD13                     ' STATUS (SDC)
     ACMD23          = CMD23                     ' SET_WR_BLK_ERASE_COUNT (SDC)
     ACMD41          = CMD41                     ' SEND_OP_COND (SDC)
 
@@ -78,10 +78,10 @@ CON
     IDLING          = 1                         ' in idle state
 
     { token values }
-    SD_TOKEN_OOR    = %0000_1000                ' out of range
-    SD_TOKEN_CECC   = %0000_0100                ' ECC failed
-    SD_TOKEN_CC     = %0000_0010                ' CC error
-    SD_TOKEN_ERROR  = %0000_0001                ' Error
+    TOKEN_OOR    = %0000_1000                ' out of range
+    TOKEN_CECC   = %0000_0100                ' ECC failed
+    TOKEN_CC     = %0000_0010                ' CC error
+    TOKEN_ERROR  = %0000_0001                ' Error
 
     WRBUSY          = $00                       ' SD is busy writing block
 
@@ -89,13 +89,15 @@ OBJ
 
     spi     : "com.spi.nocog"
     time    : "time"
-    crc     : "math.crc"
+    ser     : "com.serial.terminal.ansi-new"
 
 CON
 
-    ENORESP             = $E000_0000
-    EVOLTRANGE          = $E000_0001
-    ENOHIGHCAP          = $E000_0002
+    ENORESP             = -2
+    EVOLTRANGE          = -3
+    ENOHIGHCAP          = -4
+    ERDIO               = -5
+    EWRIO               = -6
 
 VAR
 
@@ -111,30 +113,34 @@ PUB Init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
 '       1..8: (cog number + 1) of SPI engine
 '       0: no free cogs available
 '       negative numbers: error
+    ser.startrxtx(14, 15, 0, 115200)
+    ser.clear
+    ser.strln(@"SD debug started")
+
     outa[CS_PIN] := 1                           ' deselect SD card
     dira[CS_PIN] := 1
     _CS := CS_PIN
 
     ' perform initialization at slow bus speed (mandatory)
     spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
-    if (sd_init() =< 0)
+    if (card_init{} =< 0)
         return ENORESP
     status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
 
-PUB SD_Init() | resp[2], cmdAttempts
+PUB Card_Init{} | resp[2], cmdAttempts
 
     longfill(@resp, 0, 2)
     cmdAttempts := 0
 
-    SD_powerUpSeq()
+    powerUpSeq{}
 
-    repeat while (resp.byte[0] := SD_goIdleState() <> $01)
+    repeat while (resp.byte[0] := goIdleState{} <> $01)
         cmdAttempts++
         if (cmdAttempts > 10)
             return ENORESP
     longfill(@resp, 0, 2)
 
-    SD_sendIfCond(@resp)
+    sendIfCond(@resp)
     if (resp.byte[0] <> $01)
         return ENORESP
     if (resp.byte[4] <> $AA)
@@ -145,23 +151,23 @@ PUB SD_Init() | resp[2], cmdAttempts
     repeat
         if (cmdAttempts > 100)
             return ENORESP
-        resp.byte[0] := SD_sendApp()
+        resp.byte[0] := sendApp{}
 
         if (resp.byte[0] < 2)
-            resp.byte[0] := SD_sendOpCond()
+            resp.byte[0] := sendOpCond{}
 
         time.msleep(10)
 
         cmdAttempts++
-    while (resp.byte[0] <> $00) 'SD_READY?
+    while (resp.byte[0] <> $00) 'READY?
 
-    SD_readOCR(@resp)
+    readOCR(@resp)
     ifnot (resp.byte[1] & $80)
         return ENORESP
 
     return 1
 
-PUB SD_command(cmd, arg, crc)
+PUB command(cmd, arg, crc)
 
     spi.wr_byte(cmd)    '$40 already OR'd in with CMD constants
     spi.wr_byte(arg.byte[3])
@@ -171,15 +177,15 @@ PUB SD_command(cmd, arg, crc)
 
     spi.wr_byte(crc|$01)
 
-PUB SD_goIdleState: res1
+PUB goIdleState: res1
 
     spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
-    SD_command(CMD0, 0, $94)
+    command(CMD0, 0, $94)
 
-    res1 := SD_readRes1()
+    res1 := readRes1{}
 
     spi.wr_byte($ff)
     outa[_CS] := 1
@@ -187,7 +193,7 @@ PUB SD_goIdleState: res1
 
     return res1
 
-PUB SD_powerUpSeq | i
+PUB powerUpSeq | i
 
     outa[_CS] := 1
 
@@ -209,7 +215,7 @@ con
     ERASE_RESET     = %0000_0010
     IN_IDLE         = %0000_0001
 
-PUB SD_printR1(resp)
+PUB printR1(resp)
 
     if (resp & %1000_0000)
         'ser.strln(@"Error")
@@ -242,9 +248,9 @@ CON
     VDD_3435 = %01000000
     VDD_3536 = %10000000
 
-PUB SD_printR3(resp) | POWER_UP_STATUS, CCS_VAL
+PUB printR3(resp) | POWER_UP_STATUS, CCS_VAL
 
-    SD_printR1(byte[resp][0])
+    printR1(byte[resp][0])
 
     if (byte[resp][0] > 1)
         return
@@ -290,9 +296,9 @@ CON
     VOLTAGE_ACC_RES1    = %0000_0100
     VOLTAGE_ACC_RES2    = %0000_1000
 
-PUB SD_printR7(resp) | CMD_VER, VOL_ACC, i
+PUB printR7(resp) | CMD_VER, VOL_ACC, i
 
-    SD_printR1(byte[resp][0])
+    printR1(byte[resp][0])
 
     if (byte[resp][0] > 1)  'error
         return
@@ -315,21 +321,21 @@ PUB SD_printR7(resp) | CMD_VER, VOL_ACC, i
 
     'ser.printf1(@"Echo: %x\n\r", byte[resp][4])
 
-PUB SD_readOCR(resp)
+PUB readOCR(resp)
 
     spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
-    SD_command(CMD58, 0, 0)
+    command(CMD58, 0, 0)
 
-    SD_readRes3(resp)
+    readRes3(resp)
 
     spi.wr_byte($ff)
     outa[_CS] := 1
     spi.wr_byte($ff)
 
-PUB SD_readRes1: res1 | i
+PUB readRes1: res1 | i
 
     i := res1 := 0
     repeat
@@ -337,62 +343,92 @@ PUB SD_readRes1: res1 | i
         i++
         if (i > 8)
             quit
-'        'ser.printf1(@"SD_readRes1(): res1 == %x\n\r", res1)
+'        'ser.printf1(@"readRes1{}: res1 == %x\n\r", res1)
     while (res1 => $0f)
 
-PUB SD_readRes3(res3)
+PUB readRes3(res3)
 
-    byte[res3][0] := SD_readRes1()
+    byte[res3][0] := readRes1{}
 
     if (byte[res3][0] > 1)   ' error
         return
 
-    byte[res3][1] := spi.rd_byte()
-    byte[res3][2] := spi.rd_byte()
-    byte[res3][3] := spi.rd_byte()
-    byte[res3][4] := spi.rd_byte()
+    byte[res3][1] := spi.rd_byte{}
+    byte[res3][2] := spi.rd_byte{}
+    byte[res3][3] := spi.rd_byte{}
+    byte[res3][4] := spi.rd_byte{}
 
-PUB SD_readRes7(res7)
+PUB readRes7(res7)
 
-    byte[res7][0] := SD_readRes1()
+    byte[res7][0] := readRes1{}
 
     if (byte[res7][0] > 1)   ' error
         return
 
-    byte[res7][1] := spi.rd_byte()
-    byte[res7][2] := spi.rd_byte()
-    byte[res7][3] := spi.rd_byte()
-    byte[res7][4] := spi.rd_byte()
+    byte[res7][1] := spi.rd_byte{}
+    byte[res7][2] := spi.rd_byte{}
+    byte[res7][3] := spi.rd_byte{}
+    byte[res7][4] := spi.rd_byte{}
 
-PUB SD_readSingleBlock(addr, buf, token): res1 | read, readAttempts, i
+PUB RdBlock(ptr_buff, addr): res1 | read, rd_attm, i
 
-    'ser.strln(@"SD_readSingleBlock()")
-    res1 := read := readAttempts := 0
-    byte[token] := $ff
+    ser.strln(@"RdBlock():")
+    res1 := 0
+    read := 0
+    rd_attm := 0
+    i := 0
 
     spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
     'ser.strln(@"sending CMD17")
-    SD_command(CMD17, addr, $00)
+    { the first attempt at sending the read block command doesn't always succeed,
+        so try sending it up to 10 times, waiting 10ms in between attempts }
+    repeat 10
+        command(CMD17, addr, $00)
 
-    res1 := SD_readRes1()
-    'ser.printf1(@"res1 is %x\n\r", res1)
+        res1 := readRes1{}
+        ser.printf1(@"CMD17 res1 is %x\n\r", res1)
+        if (res1 <> $ff)
+            quit
+        time.msleep(10)
+
     if (res1 <> $ff)
-        readAttempts := 0
-        repeat while (++readAttempts <> 20)
-'            'ser.printf1(@"readattempts = %d\n\r", readAttempts)
+        rd_attm := 0
+        repeat while (++rd_attm <> 20)
+'            'ser.printf1(@"readattempts = %d\n\r", rd_attm)
             if ((read := spi.rd_byte) <> $ff)
                 quit
             time.msleep(10)
         if (read == $fe)    ' start token
-            'ser.strln(@"got start token")
+            ser.strln(@"got start token")
             repeat i from 0 to 511
-                byte[buf][i] := spi.rd_byte
+                byte[ptr_buff][i] := spi.rd_byte
             spi.rd_byte
             spi.rd_byte ' throw away CRC
-        byte[token] := read
+        ser.printf1(@"read 1 is %x\n\r", read)
+
+    spi.wr_byte($ff)
+    outa[_CS] := 1
+    spi.wr_byte($ff)
+
+    ser.printf1(@"read 2 is %x\n\r", read)
+    ser.strln(@"RdBlock(): [ret]")
+    if (read == $fe)
+        return 512
+    else
+        return ERDIO
+
+PUB sendApp{}: res1
+
+    spi.wr_byte($ff)
+    outa[_CS] := 0
+    spi.wr_byte($ff)
+
+    command(CMD55, 0, 0)
+
+    res1 := readRes1{}
 
     spi.wr_byte($ff)
     outa[_CS] := 1
@@ -400,16 +436,29 @@ PUB SD_readSingleBlock(addr, buf, token): res1 | read, readAttempts, i
 
     return res1
 
-
-PUB SD_sendApp(): res1
+PUB sendIfCond(resp)
 
     spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
-    SD_command(CMD55, 0, 0)
+    command(CMD8, $00_00_01_aa, $86)
 
-    res1 := SD_readRes1()
+    readRes7(resp)
+
+    spi.wr_byte($ff)
+    outa[_CS] := 1
+    spi.wr_byte($ff)
+
+PUB sendOpCond{}: res1
+
+    spi.wr_byte($ff)
+    outa[_CS] := 0
+    spi.wr_byte($ff)
+
+    command(ACMD41, $40_00_00_00, 0)
+
+    res1 := readRes1{}
 
     spi.wr_byte($ff)
     outa[_CS] := 1
@@ -417,49 +466,19 @@ PUB SD_sendApp(): res1
 
     return res1
 
-PUB SD_sendIfCond(resp)
+PUB WrBlock(buf, addr): resp | readAttempts, read, i, token
 
-    spi.wr_byte($ff)
-    outa[_CS] := 0
-    spi.wr_byte($ff)
-
-    SD_command(CMD8, $00_00_01_aa, $86)
-
-    SD_readRes7(resp)
-
-    spi.wr_byte($ff)
-    outa[_CS] := 1
-    spi.wr_byte($ff)
-
-PUB SD_sendOpCond(): res1
-
-    spi.wr_byte($ff)
-    outa[_CS] := 0
-    spi.wr_byte($ff)
-
-    SD_command(ACMD41, $40_00_00_00, 0)
-
-    res1 := SD_readRes1()
-
-    spi.wr_byte($ff)
-    outa[_CS] := 1
-    spi.wr_byte($ff)
-
-    return res1
-
-PUB SD_writeSingleBlock(addr, buf, token): resp | readAttempts, read, i
-
-'    'ser.printf3(@"SD_writeSingleBlock(): addr = %x, buf = %x, token = %x", addr, buf, token)
+'    'ser.printf3(@"writeSingleBlock{}: addr = %x, buf = %x, token = %x", addr, buf, token)
     readAttempts := read := i := 0
-    byte[token] := $ff
+    token := $ff
 
     spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
-    SD_command(CMD24, addr, 0)
+    command(CMD24, addr, 0)
 
-    resp.byte[0] := SD_readRes1()
+    resp.byte[0] := readRes1{}
 
     if (resp.byte[0] == 0)  'READY?
         spi.wr_byte(START_BLK)
@@ -471,18 +490,18 @@ PUB SD_writeSingleBlock(addr, buf, token): resp | readAttempts, read, i
         repeat while (++readAttempts <> 25)
             read := spi.rd_byte
             if (read <> $ff)
-                byte[token] := $ff
+                token := $ff
                 quit
             time.msleep(10)
 
         if (read & $1f) == $05  ' block was accepted by the card
-            byte[token] := $05
+            token := $05
 
             readAttempts := 0
             repeat
                 read := spi.rd_byte
                 if (++readAttempts == 25)
-                    byte[token] := $00
+                    token := $00
                     quit
                 time.msleep(10)
             while (read == WRBUSY)
@@ -491,22 +510,10 @@ PUB SD_writeSingleBlock(addr, buf, token): resp | readAttempts, read, i
     outa[_CS] := 1
     spi.wr_byte($ff)
 
-    return resp.byte[0]
-
-PUB RdBlock(ptr_buff, block_nr): resp | token
-
-    token := 0
-    resp := SD_readSingleBlock(block_nr, ptr_buff, @token)
-    if (token == $fe)
-        return 512
-
-PUB WrBlock(ptr_buff, block_nr): resp | token
-
-    token := 0
-    resp := SD_writeSingleBlock(block_nr, ptr_buff, @token)
-    'ser.printf1(@"WrBlock(): token = %x\n\r", token)
     if (token == $05)
         return 512
+    else
+        return EWRIO
 
 DAT
 {
