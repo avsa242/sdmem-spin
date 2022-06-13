@@ -6,7 +6,7 @@
         20MHz write, 10MHz read
     Copyright (c) 2022
     Started Aug 1, 2021
-    Updated Jun 12, 2022
+    Updated Jun 13, 2022
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -102,7 +102,6 @@ CON
 VAR
 
     long _CS
-    long _is_hc
 
 PUB Null{}
 ' This is not a top-level object
