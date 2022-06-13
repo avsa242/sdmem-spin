@@ -84,6 +84,7 @@ CON
     TOKEN_ERROR  = %0000_0001                ' Error
 
     WRBUSY          = $00                       ' SD is busy writing block
+    BLK_ACCEPTED    = $05
 
 OBJ
 
@@ -465,11 +466,11 @@ PUB sendOpCond{}: res1
 
     return res1
 
-PUB WrBlock(buf, addr): resp | readAttempts, read, i, token
+PUB WrBlock(buf, addr): resp | rd_attm, read, i
 
 '    'ser.printf3(@"writeSingleBlock{}: addr = %x, buf = %x, token = %x", addr, buf, token)
-    readAttempts := read := i := 0
-    token := $ff
+    rd_attm := read := i := 0
+    resp := $ff
 
     spi.wr_byte($ff)
     outa[_CS] := 0
@@ -485,22 +486,22 @@ PUB WrBlock(buf, addr): resp | readAttempts, read, i, token
         repeat i from 0 to 511
             spi.wr_byte(byte[buf][i])
 
-        readAttempts := 0
-        repeat while (++readAttempts <> 25)
+        rd_attm := 0
+        repeat while (++rd_attm <> 25)
             read := spi.rd_byte
             if (read <> $ff)
-                token := $ff
+                resp := $ff
                 quit
             time.msleep(10)
 
-        if (read & $1f) == $05  ' block was accepted by the card
-            token := $05
+        if ((read & $1f) == BLK_ACCEPTED)  ' block was accepted by the card
+            resp := BLK_ACCEPTED
 
-            readAttempts := 0
+            rd_attm := 0
             repeat
                 read := spi.rd_byte
-                if (++readAttempts == 25)
-                    token := $00
+                if (++rd_attm == 25)
+                    resp := $00
                     quit
                 time.msleep(10)
             while (read == WRBUSY)
@@ -509,7 +510,7 @@ PUB WrBlock(buf, addr): resp | readAttempts, read, i, token
     outa[_CS] := 1
     spi.wr_byte($ff)
 
-    if (token == $05)
+    if (resp == BLK_ACCEPTED)
         return 512
     else
         return EWRIO
