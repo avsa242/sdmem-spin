@@ -6,7 +6,7 @@
         20MHz write, 10MHz read
     Copyright (c) 2022
     Started Aug 1, 2021
-    Updated Jun 13, 2022
+    Updated Jun 25, 2022
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -170,10 +170,7 @@ PUB Card_Init{} | resp[2], cmdAttempts
 PUB command(cmd, arg, crc)
 
     spi.wr_byte(cmd)    '$40 already OR'd in with CMD constants
-    spi.wr_byte(arg.byte[3])
-    spi.wr_byte(arg.byte[2])
-    spi.wr_byte(arg.byte[1])
-    spi.wr_byte(arg.byte[0])
+    spi.wrlong_msbf(arg)
 
     spi.wr_byte(crc|$01)
 
@@ -403,8 +400,7 @@ PUB RdBlock(ptr_buff, addr): res1 | read, rd_attm, i
             time.msleep(10)
         if (read == $fe)    ' start token
             ser.strln(@"got start token")
-            repeat i from 0 to 511
-                byte[ptr_buff][i] := spi.rd_byte
+            spi.rdblock_lsbf(ptr_buff, 512)
             spi.rd_byte
             spi.rd_byte ' throw away CRC
         ser.printf1(@"read 1 is %x\n\r", read)
@@ -482,10 +478,7 @@ PUB WrBlock(buf, addr): resp | rd_attm, read, i
 
     if (resp.byte[0] == 0)  'READY?
         spi.wr_byte(START_BLK)
-
-        repeat i from 0 to 511
-            spi.wr_byte(byte[buf][i])
-
+        spi.wrblock_lsbf(buf, 512)
         rd_attm := 0
         repeat while (++rd_attm <> 25)
             read := spi.rd_byte
