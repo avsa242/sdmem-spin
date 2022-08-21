@@ -1,6 +1,6 @@
 {
     --------------------------------------------
-    Filename: memory.flash.sd.spi.spin
+    Filename: memory.sd-spi.spin
     Author: Jesse Burt
     Description: Driver for SPI-connected SDHC/SDXC cards
         20MHz write, 10MHz read
