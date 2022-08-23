@@ -6,7 +6,7 @@
         20MHz write, 10MHz read
     Copyright (c) 2022
     Started Aug 1, 2021
-    Updated Jun 26, 2022
+    Updated Aug 23, 2022
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -105,10 +105,10 @@ VAR
 
     long _CS
 
-PUB Null{}
+PUB null{}
 ' This is not a top-level object
 
-PUB Init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
+PUB init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
 ' Initialize block I/O
 '   Returns:
 '       1..8: (cog number + 1) of SPI engine
@@ -124,7 +124,7 @@ PUB Init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
         return ENORESP
     status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
 
-PUB RdBlock(ptr_buff, blkaddr): res1 | read, rd_attm, i
+PUB rd_block(ptr_buff, blkaddr): res1 | read, rd_attm, i
 ' Read a block/sector from the card
 '   ptr_buff: address of buffer to copy data to
 '   blkaddr: block/sector address to read from
@@ -133,7 +133,6 @@ PUB RdBlock(ptr_buff, blkaddr): res1 | read, rd_attm, i
     rd_attm := 0
     i := 0
 
-    spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
@@ -142,7 +141,7 @@ PUB RdBlock(ptr_buff, blkaddr): res1 | read, rd_attm, i
     repeat 10
         command(CMD17, blkaddr, $00)
 
-        res1 := readRes1{}
+        res1 := read_res1{}
         if (res1 <> $ff)
             quit
         time.msleep(10)
@@ -160,27 +159,25 @@ PUB RdBlock(ptr_buff, blkaddr): res1 | read, rd_attm, i
 
     spi.wr_byte($ff)
     outa[_CS] := 1
-    spi.wr_byte($ff)
 
     if (read == $fe)
         return READ_OK
     else
         return ERDIO
 
-PUB WrBlock(ptr_buff, blkaddr): resp | rd_attm, read, i
+PUB wr_block(ptr_buff, blkaddr): resp | rd_attm, read, i
 ' Write data to a block/sector on the card
 '   ptr_buff: pointer to buffer containing data to write
 '   blkaddr: block/sector address to write to
     rd_attm := read := i := 0
     resp := $ff
 
-    spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
     command(CMD24, blkaddr, 0)
 
-    resp.byte[0] := readRes1{}
+    resp.byte[0] := read_res1{}
 
     if (resp.byte[0] == 0)  'READY?
         spi.wr_byte(START_BLK)
@@ -207,28 +204,27 @@ PUB WrBlock(ptr_buff, blkaddr): resp | rd_attm, read, i
 
     spi.wr_byte($ff)
     outa[_CS] := 1
-    spi.wr_byte($ff)
 
     if (resp == BLK_ACCEPTED)
         return WRITE_OK
     else
         return EWRIO
 
-PRI Card_Init{}: status | resp[2], cmdAttempts
+PRI card_init{}: status | resp[2], cmdAttempts
 ' Initialize the card
     longfill(@resp, 0, 2)
     cmdAttempts := 0
 
-    powerUpSeq{}
+    power_up_seq{}
 
     { try (up to 10 times) setting the card to idle state }
-    repeat while (resp.byte[0] := setIdle{} <> $01)
+    repeat while (resp.byte[0] := set_idle{} <> $01)
         cmdAttempts++
         if (cmdAttempts > 10)
             return ENORESP
     longfill(@resp, 0, 2)
 
-    sendIfCond(@resp)
+    send_if_cond(@resp)
     if (resp.byte[0] <> $01)
         return ENORESP
     if (resp.byte[4] <> $AA)
@@ -239,17 +235,17 @@ PRI Card_Init{}: status | resp[2], cmdAttempts
     repeat
         if (cmdAttempts > 100)
             return ENORESP
-        resp.byte[0] := appSpecCmd{}
+        resp.byte[0] := app_spec_cmd{}
 
         if (resp.byte[0] < 2)
-            resp.byte[0] := sendOpCond{}
+            resp.byte[0] := send_op_cond{}
 
         time.msleep(10)
 
         cmdAttempts++
     while (resp.byte[0] <> $00)                 ' ready?
 
-    readOCR(@resp)
+    read_ocr(@resp)
     ifnot (resp.byte[1] & $80)
         return ENORESP
 
@@ -265,24 +261,22 @@ PRI command(cmd, arg, crc)
     spi.wrlong_msbf(arg)
     spi.wr_byte(crc|$01)
 
-PRI setIdle{}: res1
+PRI set_idle{}: res1
 ' Command card to idle state
 '   Returns: result register (R1)
-    spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
     command(CMD0, 0, $94)
 
-    res1 := readRes1{}
+    res1 := read_res1{}
 
     spi.wr_byte($ff)
     outa[_CS] := 1
-    spi.wr_byte($ff)
 
     return res1
 
-PRI powerUpSeq{} | i
+PRI power_up_seq{} | i
 ' Power up/wake up cards connected to the bus
     { ensure card is _NOT_ selected }
     outa[_CS] := 1
@@ -324,23 +318,21 @@ CON
     VOLTAGE_ACC_RES1    = %0000_0100
     VOLTAGE_ACC_RES2    = %0000_1000
 
-PRI readOCR(ptr_resp)
+PRI read_ocr(ptr_resp)
 ' Read operating conditions register
 '   ptr_resp: pointer to buffer to copy response to
 '   Returns: none
-    spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
     command(CMD58, 0, 0)
 
-    readRes3(ptr_resp)
+    read_res3(ptr_resp)
 
     spi.wr_byte($ff)
     outa[_CS] := 1
-    spi.wr_byte($ff)
 
-PRI readRes1{}: res1 | i
+PRI read_res1{}: res1 | i
 ' Read response register (R1)
 '   Returns: response R1
     i := res1 := 0
@@ -351,11 +343,11 @@ PRI readRes1{}: res1 | i
             quit
     while (res1 => $0f)
 
-PRI readRes3(ptr_resp)
+PRI read_res3(ptr_resp)
 ' Read response register (R3)
 '   ptr_resp: pointer to buffer to copy response to
 '   Returns: none
-    byte[ptr_resp][0] := readRes1{}
+    byte[ptr_resp][0] := read_res1{}
 
     if (byte[ptr_resp][0] > 1)                  ' error
         return
@@ -365,11 +357,11 @@ PRI readRes3(ptr_resp)
     byte[ptr_resp][3] := spi.rd_byte{}
     byte[ptr_resp][4] := spi.rd_byte{}
 
-PRI readRes7(ptr_buff)
+PRI read_res7(ptr_buff)
 ' Read response register (R7)
 '   ptr_buff: pointer to buffer to copy response to
 '   Returns: none
-    byte[ptr_buff][0] := readRes1{}
+    byte[ptr_buff][0] := read_res1{}
 
     if (byte[ptr_buff][0] > 1)                  ' error
         return
@@ -379,75 +371,67 @@ PRI readRes7(ptr_buff)
     byte[ptr_buff][3] := spi.rd_byte{}
     byte[ptr_buff][4] := spi.rd_byte{}
 
-PRI appSpecCmd{}: res1
+PRI app_spec_cmd{}: res1
 ' Signal to card that the next command will be an application-specific command
 '   Returns: response register R1
-    spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
     command(CMD55, 0, 0)
 
-    res1 := readRes1{}
+    res1 := read_res1{}
 
     spi.wr_byte($ff)
     outa[_CS] := 1
-    spi.wr_byte($ff)
 
     return res1
 
-PRI sendIfCond(ptr_buff)
+PRI send_if_cond(ptr_buff)
 ' Send interface conditions to card
 '   ptr_buff: pointer to buffer to copy response to
 '   Returns: none
-    spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
     command(CMD8, $00_00_01_aa, $86)
 
-    readRes7(ptr_buff)
+    read_res7(ptr_buff)
 
     spi.wr_byte($ff)
     outa[_CS] := 1
-    spi.wr_byte($ff)
 
-PRI sendOpCond{}: res1
+PRI send_op_cond{}: res1
 ' Send operating conditions command to card
 '   Returns: response register R1
-    spi.wr_byte($ff)
     outa[_CS] := 0
     spi.wr_byte($ff)
 
     command(ACMD41, $40_00_00_00, 0)
 
-    res1 := readRes1{}
+    res1 := read_res1{}
 
     spi.wr_byte($ff)
     outa[_CS] := 1
-    spi.wr_byte($ff)
 
     return res1
 
 DAT
 {
-    --------------------------------------------------------------------------------------------------------
-    TERMS OF USE: MIT License
+Copyright 2022 Jesse Burt
 
-    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
-    associated documentation files (the "Software"), to deal in the Software without restriction, including
-    without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
-    following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-    The above copyright notice and this permission notice shall be included in all copies or substantial
-    portions of the Software.
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
 
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
-    LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-    WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-    --------------------------------------------------------------------------------------------------------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 }
 
