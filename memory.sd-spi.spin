@@ -125,7 +125,7 @@ PUB rd_block(ptr_buff, blkaddr): res1 | tries, read
         command(CMD17, blkaddr, $00)
 
         res1 := read_res1{}
-        if (res1 <> $ff)                        ' acknowledged
+        if (res1 <> $ff)                        ' got a response
             quit
         time.msleep(10)
 
@@ -140,7 +140,6 @@ PUB rd_block(ptr_buff, blkaddr): res1 | tries, read
             spi.rd_byte{}
             spi.rd_byte{}                       ' throw away CRC
 
-    spi.wr_byte($ff)
     outa[_CS] := 1
 
     if (read == START_BLK)
@@ -184,7 +183,6 @@ PUB wr_block(ptr_buff, blkaddr): resp | tries, read
                 time.msleep(10)
             while (read == WRBUSY)
 
-    spi.wr_byte($ff)
     outa[_CS] := 1
 
     if (resp == BLK_ACCEPTED)
@@ -197,10 +195,7 @@ PRI app_spec_cmd{}: res1
 '   Returns: response register R1
     outa[_CS] := 0
     command(CMD55, 0, 0)
-
     res1 := read_res1{}
-
-    spi.wr_byte($ff)
     outa[_CS] := 1
 
     return res1
@@ -267,18 +262,13 @@ PRI power_up_seq{} | i
     repeat i from 0 to 9
         spi.wr_byte($ff)
 
-    spi.wr_byte($ff)
-
 PRI read_ocr(ptr_resp)
 ' Read operating conditions register
 '   ptr_resp: pointer to buffer to copy response to
 '   Returns: none
     outa[_CS] := 0
     command(CMD58, 0, 0)
-
     read_res3(ptr_resp)
-
-    spi.wr_byte($ff)
     outa[_CS] := 1
 
 PRI read_res1{}: res1 | tries
@@ -326,10 +316,7 @@ PRI send_if_cond(ptr_buff)
 '   Returns: none
     outa[_CS] := 0
     command(CMD8, $00_00_01_aa, $86)
-
     read_res7(ptr_buff)
-
-    spi.wr_byte($ff)
     outa[_CS] := 1
 
 PRI send_op_cond{}: res1
@@ -337,10 +324,7 @@ PRI send_op_cond{}: res1
 '   Returns: response register R1
     outa[_CS] := 0
     command(ACMD41, $40_00_00_00, 0)
-
     res1 := read_res1{}
-
-    spi.wr_byte($ff)
     outa[_CS] := 1
 
     return res1
@@ -350,10 +334,7 @@ PRI set_idle{}: res1
 '   Returns: result register (R1)
     outa[_CS] := 0
     command(CMD0, 0, $94)
-
     res1 := read_res1{}
-
-    spi.wr_byte($ff)
     outa[_CS] := 1
 
     return res1
