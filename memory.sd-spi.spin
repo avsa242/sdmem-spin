@@ -19,12 +19,13 @@ CON
     CMD_BASE        = $40
     CMD0            = CMD_BASE+0                ' GO_IDLE_STATE
     CMD8            = CMD_BASE+8                ' SEND_IF_COND
-        VHS         = 16
-        CHKPATT     = 8
+        VHS         = 8
+        CHKPATT     = 0
         VHS_BITS    = %1111
         CHKPATT_BITS= %1111_1111
-        _3V3        = %0001
-        _LV         = %0010
+        _2V7_3V6    = (%0001 << VHS)
+        _LV         = (%0010 << VHS)
+        CHKPATT_DEF = $AA
 
     CMD12           = CMD_BASE+12               ' STOP_TRANSMISSION
     CMD17           = CMD_BASE+17               ' READ_SINGLE_BLOCK
@@ -55,6 +56,7 @@ CON
     ACMD41          = CMD_BASE+41               ' SEND_OP_COND (SDC)
 
     { R1 response bits }
+    R1              = 0                         ' byte index in multi-byte response
     PARAM_ERR       = (1 << 6)                  ' parameter error
     ADDR_ERR        = (1 << 5)                  ' address error
     ERASEQ_ERR      = (1 << 4)                  ' erase sequence error
@@ -158,9 +160,9 @@ PUB wr_block(ptr_buff, blkaddr): resp | tries, read
     outa[_CS] := 0
     command(CMD24, blkaddr, 0)
 
-    resp.byte[0] := read_res1{}
+    resp.byte[R1] := read_res1{}
 
-    if (resp.byte[0] == READY)
+    if (resp.byte[R1] == READY)
         spi.wr_byte(START_BLK)
         spi.wrblock_lsbf(ptr_buff, SECT_SZ)
         tries := 0
@@ -207,32 +209,33 @@ PRI card_init{}: status | resp[2], tries
     power_up_seq{}
 
     { try (up to 10 times) setting the card to idle state }
-    repeat while (resp.byte[0] := set_idle{} <> $01)
+    repeat
         tries++
         if (tries > 10)
             return ENORESP
-    longfill(@resp, 0, 2)
+        resp := set_idle{}
+    while (resp <> IDLING)
 
+    longfill(@resp, 0, 3)
     send_if_cond(@resp)
-    if (resp.byte[0] <> $01)
-        return ENORESP
+    if (resp.byte[R1] <> $01)
+        return ENORESP                          ' unsupported card (first gen?)
     if (resp.byte[4] <> $AA)
         return ENORESP
-    longfill(@resp, 0, 2)
 
-    tries := 0
+    longfill(@resp, 0, 3)
     repeat
         if (tries > 100)
             return ENORESP
-        resp.byte[0] := app_spec_cmd{}
+        resp.byte[R1] := app_spec_cmd{}
 
-        if (resp.byte[0] < 2)
-            resp.byte[0] := send_op_cond{}
+        if (resp.byte[R1] < 2)
+            resp.byte[R1] := send_op_cond{}
 
         time.msleep(10)
 
         tries++
-    while (resp.byte[0] <> $00)                 ' ready?
+    while (resp.byte[R1] <> $00)                 ' ready?
 
     read_ocr(@resp)
     ifnot (resp.byte[1] & $80)
@@ -310,12 +313,16 @@ PRI read_res7(ptr_buff)
     byte[ptr_buff][3] := spi.rd_byte{}
     byte[ptr_buff][4] := spi.rd_byte{}
 
+CON CMD8_CRC = $86
+
 PRI send_if_cond(ptr_buff)
 ' Send interface conditions to card
 '   ptr_buff: pointer to buffer to copy response to
 '   Returns: none
+
+    { set voltage supplied (VHS) bit to 2.7-3.6v range, and use a common check pattern }
     outa[_CS] := 0
-    command(CMD8, $00_00_01_aa, $86)
+    command(CMD8, _2V7_3V6 | CHKPATT_DEF, CMD8_CRC)
     read_res7(ptr_buff)
     outa[_CS] := 1
 
