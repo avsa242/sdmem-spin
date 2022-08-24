@@ -6,7 +6,7 @@
         20MHz write, 10MHz read
     Copyright (c) 2022
     Started Aug 1, 2021
-    Updated Aug 23, 2022
+    Updated Aug 24, 2022
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -18,8 +18,6 @@ CON
 ' SD card commands
     CMD_BASE        = $40
     CMD0            = CMD_BASE+0                ' GO_IDLE_STATE
-    CMD1            = CMD_BASE+1                ' SEND_OP_COND (MMC)
-
     CMD8            = CMD_BASE+8                ' SEND_IF_COND
         VHS         = 16
         CHKPATT     = 8
@@ -28,22 +26,16 @@ CON
         _3V3        = %0001
         _LV         = %0010
 
-    CMD9            = CMD_BASE+9                ' SEND_CSD
-    CMD10           = CMD_BASE+10               ' SEND_CID
     CMD12           = CMD_BASE+12               ' STOP_TRANSMISSION
-    CMD13           = CMD_BASE+13               ' SEND_STATUS
-    CMD16           = CMD_BASE+16               ' SET_BLOCKLEN
     CMD17           = CMD_BASE+17               ' READ_SINGLE_BLOCK
     CMD18           = CMD_BASE+18               ' READ_MULTIPLE_BLOCK
-    CMD23           = CMD_BASE+23               ' SET_BLOCK_COUNT (MMC)
     CMD24           = CMD_BASE+24               ' WRITE_BLOCK
     CMD25           = CMD_BASE+25               ' WRITE_MULTIPLE_BLOCK
-    CMD41           = CMD_BASE+41               ' xxx
     CMD55           = CMD_BASE+55               ' APP_CMD
 
     CMD58           = CMD_BASE+58               ' READ_OCR
         BUSY        = 1 << 31
-        CCS         = 1 << 30                   '
+        CCS         = 1 << 30
         UHS2CS      = 1 << 29
         S18A        = 1 << 24
         V3_5TO3_6   = 1 << 23
@@ -59,16 +51,10 @@ CON
     CMD59           = CMD_BASE+59               ' CRC_ON_OFF
         CRCEN       = 0
 
-' Application-specific commands
-'   (defined as equivalent to general commands - handled differently
-'   in AppSpecCMD{} )
-    ACMD13          = CMD13                     ' STATUS (SDC)
-    ACMD23          = CMD23                     ' SET_WR_BLK_ERASE_COUNT (SDC)
-    ACMD41          = CMD41                     ' SEND_OP_COND (SDC)
+    { application-specific commands }
+    ACMD41          = CMD_BASE+41               ' SEND_OP_COND (SDC)
 
-    START_BLK       = $FE                       ' Start token
-
-' R1 bits
+    { R1 response bits }
     PARAM_ERR       = (1 << 6)                  ' parameter error
     ADDR_ERR        = (1 << 5)                  ' address error
     ERASEQ_ERR      = (1 << 4)                  ' erase sequence error
@@ -78,10 +64,11 @@ CON
     IDLING          = 1                         ' in idle state
 
     { token values }
-    TOKEN_OOR    = %0000_1000                ' out of range
-    TOKEN_CECC   = %0000_0100                ' ECC failed
-    TOKEN_CC     = %0000_0010                ' CC error
-    TOKEN_ERROR  = %0000_0001                ' Error
+    START_BLK       = $FE                       ' Start token
+    TOKEN_OOR       = %0000_1000                ' out of range
+    TOKEN_CECC      = %0000_0100                ' ECC failed
+    TOKEN_CC        = %0000_0010                ' CC error
+    TOKEN_ERROR     = %0000_0001                ' Error
 
     WRBUSY          = $00                       ' SD is busy writing block
     BLK_ACCEPTED    = $05
@@ -124,32 +111,28 @@ PUB init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
         return ENORESP
     status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
 
-PUB rd_block(ptr_buff, blkaddr): res1 | read, rd_attm, i
+PUB rd_block(ptr_buff, blkaddr): res1 | tries, read
 ' Read a block/sector from the card
 '   ptr_buff: address of buffer to copy data to
 '   blkaddr: block/sector address to read from
-    res1 := 0
-    read := 0
-    rd_attm := 0
-    i := 0
+    tries := read := 0
 
     outa[_CS] := 0
-    spi.wr_byte($ff)
 
-    { the first attempt at sending the read block command doesn't always succeed,
-        so try sending it up to 10 times, waiting 10ms in between attempts }
+    { the first tries at sending the read block command doesn't always succeed,
+        so try sending it up to 10 times, waiting 10ms in between tries }
     repeat 10
         command(CMD17, blkaddr, $00)
 
         res1 := read_res1{}
-        if (res1 <> $ff)
+        if (res1 <> $ff)                        ' acknowledged
             quit
         time.msleep(10)
 
     if (res1 <> $ff)
-        rd_attm := 0
-        repeat while (++rd_attm <> 20)
-            if ((read := spi.rd_byte) <> $ff)
+        tries := 0
+        repeat while (++tries < 20)
+            if ((read := spi.rd_byte{}) <> $ff)
                 quit
             time.msleep(10)
         if (read == START_BLK)                  ' start token received
@@ -160,31 +143,30 @@ PUB rd_block(ptr_buff, blkaddr): res1 | read, rd_attm, i
     spi.wr_byte($ff)
     outa[_CS] := 1
 
-    if (read == $fe)
+    if (read == START_BLK)
         return READ_OK
     else
-        return ERDIO
+        return ERDIO                            ' read error
 
-PUB wr_block(ptr_buff, blkaddr): resp | rd_attm, read, i
+CON READY = 0
+PUB wr_block(ptr_buff, blkaddr): resp | tries, read
 ' Write data to a block/sector on the card
 '   ptr_buff: pointer to buffer containing data to write
 '   blkaddr: block/sector address to write to
-    rd_attm := read := i := 0
+    tries := read := 0
     resp := $ff
 
     outa[_CS] := 0
-    spi.wr_byte($ff)
-
     command(CMD24, blkaddr, 0)
 
     resp.byte[0] := read_res1{}
 
-    if (resp.byte[0] == 0)  'READY?
+    if (resp.byte[0] == READY)
         spi.wr_byte(START_BLK)
         spi.wrblock_lsbf(ptr_buff, SECT_SZ)
-        rd_attm := 0
-        repeat while (++rd_attm <> 25)
-            read := spi.rd_byte
+        tries := 0
+        repeat while (++tries <> 25)
+            read := spi.rd_byte{}
             if (read <> $ff)
                 resp := $ff
                 quit
@@ -193,10 +175,10 @@ PUB wr_block(ptr_buff, blkaddr): resp | rd_attm, read, i
         if ((read & $1f) == BLK_ACCEPTED)  ' block was accepted by the card
             resp := BLK_ACCEPTED
 
-            rd_attm := 0
+            tries := 0
             repeat
-                read := spi.rd_byte
-                if (++rd_attm == 25)
+                read := spi.rd_byte{}
+                if (++tries == 25)
                     resp := $00
                     quit
                 time.msleep(10)
@@ -208,19 +190,31 @@ PUB wr_block(ptr_buff, blkaddr): resp | rd_attm, read, i
     if (resp == BLK_ACCEPTED)
         return WRITE_OK
     else
-        return EWRIO
+        return EWRIO                            ' write error
 
-PRI card_init{}: status | resp[2], cmdAttempts
+PRI app_spec_cmd{}: res1
+' Signal to card that the next command will be an application-specific command
+'   Returns: response register R1
+    outa[_CS] := 0
+    command(CMD55, 0, 0)
+
+    res1 := read_res1{}
+
+    spi.wr_byte($ff)
+    outa[_CS] := 1
+
+    return res1
+
+PRI card_init{}: status | resp[2], tries
 ' Initialize the card
-    longfill(@resp, 0, 2)
-    cmdAttempts := 0
+    longfill(@resp, 0, 3)
 
     power_up_seq{}
 
     { try (up to 10 times) setting the card to idle state }
     repeat while (resp.byte[0] := set_idle{} <> $01)
-        cmdAttempts++
-        if (cmdAttempts > 10)
+        tries++
+        if (tries > 10)
             return ENORESP
     longfill(@resp, 0, 2)
 
@@ -231,9 +225,9 @@ PRI card_init{}: status | resp[2], cmdAttempts
         return ENORESP
     longfill(@resp, 0, 2)
 
-    cmdAttempts := 0
+    tries := 0
     repeat
-        if (cmdAttempts > 100)
+        if (tries > 100)
             return ENORESP
         resp.byte[0] := app_spec_cmd{}
 
@@ -242,7 +236,7 @@ PRI card_init{}: status | resp[2], cmdAttempts
 
         time.msleep(10)
 
-        cmdAttempts++
+        tries++
     while (resp.byte[0] <> $00)                 ' ready?
 
     read_ocr(@resp)
@@ -257,24 +251,10 @@ PRI command(cmd, arg, crc)
 '   arg: arguments/parameters (4 bytes, MSByte-first)
 '   crc: 7-bit CRC
 '   Returns: none
+    spi.wr_byte($ff)                            ' dummy clocks
     spi.wr_byte(cmd)
     spi.wrlong_msbf(arg)
-    spi.wr_byte(crc|$01)
-
-PRI set_idle{}: res1
-' Command card to idle state
-'   Returns: result register (R1)
-    outa[_CS] := 0
-    spi.wr_byte($ff)
-
-    command(CMD0, 0, $94)
-
-    res1 := read_res1{}
-
-    spi.wr_byte($ff)
-    outa[_CS] := 1
-
-    return res1
+    spi.wr_byte(crc | $01)
 
 PRI power_up_seq{} | i
 ' Power up/wake up cards connected to the bus
@@ -289,42 +269,11 @@ PRI power_up_seq{} | i
 
     spi.wr_byte($ff)
 
-CON
-
-    PARAM_ERROR     = %0100_0000
-    ADDR_ERROR      = %0010_0000
-    ERASE_SEQ_ERROR = %0001_0000
-    CRC_ERROR       = %0000_1000
-    ILLEGAL_CMD     = %0000_0100
-    ERASE_RESET     = %0000_0010
-    IN_IDLE         = %0000_0001
-
-CON
-
-    VDD_2728 = %10000000
-    VDD_2829 = %00000001
-    VDD_2930 = %00000010
-    VDD_3031 = %00000100
-    VDD_3132 = %00001000
-    VDD_3233 = %00010000
-    VDD_3334 = %00100000
-    VDD_3435 = %01000000
-    VDD_3536 = %10000000
-
-CON
-
-    VOLTAGE_ACC_27_33   = %0000_0001
-    VOLTAGE_ACC_LOW     = %0000_0010
-    VOLTAGE_ACC_RES1    = %0000_0100
-    VOLTAGE_ACC_RES2    = %0000_1000
-
 PRI read_ocr(ptr_resp)
 ' Read operating conditions register
 '   ptr_resp: pointer to buffer to copy response to
 '   Returns: none
     outa[_CS] := 0
-    spi.wr_byte($ff)
-
     command(CMD58, 0, 0)
 
     read_res3(ptr_resp)
@@ -332,14 +281,14 @@ PRI read_ocr(ptr_resp)
     spi.wr_byte($ff)
     outa[_CS] := 1
 
-PRI read_res1{}: res1 | i
+PRI read_res1{}: res1 | tries
 ' Read response register (R1)
 '   Returns: response R1
-    i := res1 := 0
+    tries := res1 := 0
     repeat
         res1 := spi.rd_byte{}
-        i++
-        if (i > 8)
+        tries++
+        if (tries > 8)                          ' give up after 8 tries
             quit
     while (res1 => $0f)
 
@@ -371,28 +320,11 @@ PRI read_res7(ptr_buff)
     byte[ptr_buff][3] := spi.rd_byte{}
     byte[ptr_buff][4] := spi.rd_byte{}
 
-PRI app_spec_cmd{}: res1
-' Signal to card that the next command will be an application-specific command
-'   Returns: response register R1
-    outa[_CS] := 0
-    spi.wr_byte($ff)
-
-    command(CMD55, 0, 0)
-
-    res1 := read_res1{}
-
-    spi.wr_byte($ff)
-    outa[_CS] := 1
-
-    return res1
-
 PRI send_if_cond(ptr_buff)
 ' Send interface conditions to card
 '   ptr_buff: pointer to buffer to copy response to
 '   Returns: none
     outa[_CS] := 0
-    spi.wr_byte($ff)
-
     command(CMD8, $00_00_01_aa, $86)
 
     read_res7(ptr_buff)
@@ -404,9 +336,20 @@ PRI send_op_cond{}: res1
 ' Send operating conditions command to card
 '   Returns: response register R1
     outa[_CS] := 0
-    spi.wr_byte($ff)
-
     command(ACMD41, $40_00_00_00, 0)
+
+    res1 := read_res1{}
+
+    spi.wr_byte($ff)
+    outa[_CS] := 1
+
+    return res1
+
+PRI set_idle{}: res1
+' Command card to idle state
+'   Returns: result register (R1)
+    outa[_CS] := 0
+    command(CMD0, 0, $94)
 
     res1 := read_res1{}
 
