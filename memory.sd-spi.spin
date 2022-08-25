@@ -15,7 +15,7 @@ CON
 
     SECT_SZ         = 512                       ' bytes per sector
 
-' SD card commands
+    { SD card commands }
     CMD_BASE        = $40
     CMD0            = CMD_BASE+0                ' GO_IDLE_STATE
     CMD8            = CMD_BASE+8                ' SEND_IF_COND
@@ -74,6 +74,8 @@ CON
 
     WRBUSY          = $00                       ' SD is busy writing block
     BLK_ACCEPTED    = $05
+
+    { return values }
     READ_OK         = SECT_SZ
     WRITE_OK        = SECT_SZ
 
@@ -118,36 +120,30 @@ PUB rd_block(ptr_buff, blkaddr): res1 | tries, read
 '   ptr_buff: address of buffer to copy data to
 '   blkaddr: block/sector address to read from
     tries := read := 0
-    spi.wr_byte($ff)
+    spi.wr_byte($ff)                            ' idle clocks
     outa[_CS] := 0
 
-    { the first tries at sending the read block command doesn't always succeed,
+    { the first attempt at sending the read block command doesn't always succeed,
         so try sending it up to 10 times, waiting 10ms in between tries }
-    repeat 10
+    repeat while (++tries < 10)
         command(CMD17, blkaddr, $00)
-
         res1 := read_res1{}
         if (res1 <> $ff)                        ' got a response
-            quit
+            tries := 0
+            repeat while (++tries < 10)
+                if ((read := spi.rd_byte{}) <> $ff)
+                    quit
+                time.msleep(10)
+            if (read == START_BLK)              ' start token received
+                spi.rdblock_lsbf(ptr_buff, SECT_SZ)
+                spi.rd_byte{}
+                spi.rd_byte{}                   ' throw away CRC
+                outa[_CS] := 1
+                return READ_OK
         time.msleep(10)
 
-    if (res1 <> $ff)
-        tries := 0
-        repeat while (++tries < 20)
-            if ((read := spi.rd_byte{}) <> $ff)
-                quit
-            time.msleep(10)
-        if (read == START_BLK)                  ' start token received
-            spi.rdblock_lsbf(ptr_buff, SECT_SZ)
-            spi.rd_byte{}
-            spi.rd_byte{}                       ' throw away CRC
-
     outa[_CS] := 1
-
-    if (read == START_BLK)
-        return READ_OK
-    else
-        return ERDIO                            ' read error
+    return ERDIO                                ' read error
 
 CON READY = 0
 PUB wr_block(ptr_buff, blkaddr): resp | tries, read
