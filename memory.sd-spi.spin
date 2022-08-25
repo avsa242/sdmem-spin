@@ -6,7 +6,7 @@
         20MHz write, 10MHz read
     Copyright (c) 2022
     Started Aug 1, 2021
-    Updated Aug 24, 2022
+    Updated Aug 25, 2022
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -118,7 +118,7 @@ PUB rd_block(ptr_buff, blkaddr): res1 | tries, read
 '   ptr_buff: address of buffer to copy data to
 '   blkaddr: block/sector address to read from
     tries := read := 0
-
+    spi.wr_byte($ff)
     outa[_CS] := 0
 
     { the first tries at sending the read block command doesn't always succeed,
