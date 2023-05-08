@@ -4,9 +4,9 @@
     Author: Jesse Burt
     Description: Driver for SPI-connected SDHC/SDXC cards
         20MHz write, 10MHz read
-    Copyright (c) 2022
+    Copyright (c) 2023
     Started Aug 1, 2021
-    Updated Aug 25, 2022
+    Updated May 8, 2023
     See end of file for terms of use.
     --------------------------------------------
 }
@@ -72,16 +72,13 @@ CON
     TOKEN_CC        = %0000_0010                ' CC error
     TOKEN_ERROR     = %0000_0001                ' Error
 
-    WRBUSY          = $00                       ' SD is busy writing block
-    BLK_ACCEPTED    = $05
-
     { return values }
     READ_OK         = SECT_SZ
     WRITE_OK        = SECT_SZ
 
 OBJ
 
-    spi     : "com.spi.nocog"
+    spi     : "com.spi.20mhz"
     time    : "time"
 
 CON
@@ -110,18 +107,17 @@ PUB init(CS_PIN, SCK_PIN, MOSI_PIN, MISO_PIN): status
     _CS := CS_PIN
 
     { perform initialization at slow bus speed (mandatory) }
-    spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
+    status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
     if (card_init{} =< 0)
         return ENORESP
-    status := spi.init(SCK_PIN, MOSI_PIN, MISO_PIN, 0)
+    outa[CS_PIN] := 0                           ' select the card
 
 PUB rd_block(ptr_buff, blkaddr): res1 | tries, read
 ' Read a block/sector from the card
 '   ptr_buff: address of buffer to copy data to
 '   blkaddr: block/sector address to read from
     tries := read := 0
-    spi.wr_byte($ff)                            ' idle clocks
-    outa[_CS] := 0
+    spi.rd_byte()                               ' dummy read for idle clocks (reads fail otherwise)
 
     { the first attempt at sending the read block command doesn't always succeed,
         so try sending it up to 10 times, waiting 10ms in between tries }
@@ -133,19 +129,20 @@ PUB rd_block(ptr_buff, blkaddr): res1 | tries, read
             repeat while (++tries < 10)
                 if ((read := spi.rd_byte{}) <> $ff)
                     quit
-                time.msleep(10)
+                time.msleep(1)
             if (read == START_BLK)              ' start token received
                 spi.rdblock_lsbf(ptr_buff, SECT_SZ)
-                spi.rd_byte{}
-                spi.rd_byte{}                   ' throw away CRC
-                outa[_CS] := 1
+                spi.rdword_lsbf{}
                 return READ_OK
-        time.msleep(10)
-
-    outa[_CS] := 1
+        time.msleep(1)
     return ERDIO                                ' read error
 
-CON READY = 0
+CON
+
+    READY           = 0
+    BLK_ACCEPTED    = $05                       ' block accepted by the card
+    WRBUSY          = 0                         ' busy writing block
+
 PUB wr_block(ptr_buff, blkaddr): resp | tries, read
 ' Write data to a block/sector on the card
 '   ptr_buff: pointer to buffer containing data to write
@@ -153,35 +150,31 @@ PUB wr_block(ptr_buff, blkaddr): resp | tries, read
     tries := read := 0
     resp := $ff
 
-    outa[_CS] := 0
     command(CMD24, blkaddr, 0)
 
-    resp.byte[R1] := read_res1{}
+    resp := read_res1{}
 
-    if (resp.byte[R1] == READY)
-        spi.wr_byte(START_BLK)
-        spi.wrblock_lsbf(ptr_buff, SECT_SZ)
+    if (resp == READY)
+        spi.wr_byte(START_BLK)                  ' send start token
+        spi.wrblock_lsbf(ptr_buff, SECT_SZ)     ' and now the sector data
+
         tries := 0
-        repeat while (++tries <> 25)
-            read := spi.rd_byte{}
-            if (read <> $ff)
+        repeat while (++tries < 10)
+            if ((read := spi.rd_byte{}) <> $ff)
                 resp := $ff
                 quit
             time.msleep(10)
 
-        if ((read & $1f) == BLK_ACCEPTED)  ' block was accepted by the card
-            resp := BLK_ACCEPTED
+        if ((read & $1f) == BLK_ACCEPTED)
+            resp := BLK_ACCEPTED                ' card accepted the block
 
+            { now wait up to 100ms for it to finish writing }
             tries := 0
-            repeat
-                read := spi.rd_byte{}
-                if (++tries == 25)
-                    resp := $00
+            repeat while (spi.rd_byte{} == WRBUSY)
+                if (++tries == 10)
+                    resp := $00                 ' timed out
                     quit
                 time.msleep(10)
-            while (read == WRBUSY)
-
-    outa[_CS] := 1
 
     if (resp == BLK_ACCEPTED)
         return WRITE_OK
@@ -344,7 +337,7 @@ PRI set_idle{}: res1
 
 DAT
 {
-Copyright 2022 Jesse Burt
+Copyright 2023 Jesse Burt
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 associated documentation files (the "Software"), to deal in the Software without restriction,
